@@ -136,6 +136,16 @@ def stop_owned(process):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except PermissionError:
+            # Darwin can return EPERM for a group containing only zombies.
+            # Reap our exited leader and retry; genuine permission failures
+            # still propagate, including failures while the leader is alive.
+            if process.poll() is None:
+                raise
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     elif process.poll() is None:
         process.kill()
     process.wait(timeout=3)

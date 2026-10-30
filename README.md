@@ -14,7 +14,7 @@ The repository is the Codex counterpart of Claude Code's **Monitor tool**, and i
 
 Naming note: this tool monitors **your workload** - command output, files, training health, GPU, a PID - and wakes Codex when something happens. It does not inspect or supervise the Codex session itself; the session is the *destination* of the callback, not the thing being observed.
 
-**Current status: tested on Windows.** The published baseline also passed Ubuntu CI. See [Platform status](#platform-status) for the distinction between that baseline and this local review revision.
+**Tested locally on Windows.** CI covers Windows, Ubuntu, and macOS; see [Platform status](#platform-status) and the commit-specific workflow results for the tested revision.
 
 ## Features
 
@@ -137,7 +137,7 @@ python .\codex-monitor\scripts\watchdog_monitor.py --help
 
 | Platform | Status |
 | --- | --- |
-| Windows 11 Pro for Workstations 26H2 (build 26300) | **Tested locally.** All 55 tests pass on Python 3.10.0, 3.12.0, and 3.14.8. Codex CLI 0.166.0. |
+| Windows 11 Pro for Workstations 26H2 (build 26300) | **Tested locally.** All 59 tests pass on Python 3.10.0, 3.12.0, and 3.14.8. Codex CLI 0.166.0. |
 | Windows / Ubuntu / macOS CI | Nine jobs cover Python 3.10, 3.12, and 3.14 on all three platforms, with native file backends and PID waiting. See [workflow results](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) for each revision. |
 | Live NVIDIA GPU | **Not tested.** `nvidia-smi` is unavailable here; GPU alert, recovery, hysteresis, and `all`/`any` behavior were exercised with deterministic mocks. |
 | Live Codex wake-up | **Not verified end to end.** Tests validate callback payloads, CLI argv, and failure/warning handling; they do not prove that a real idle thread executes a follow-up turn. |

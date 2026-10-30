@@ -27,8 +27,9 @@ class EventQueue(queue.Queue):
 class FileWatcher:
     def __init__(self, path: Path, is_file: bool, events: queue.Queue, *, recursive=False,
                  pattern=None, backend="auto", poll_ms=1000):
-        self.path, self.is_file, self.events = path, is_file, events
-        self.root = path.parent if is_file else path
+        self.path, self.is_file, self.events = Path(os.path.abspath(path)), is_file, events
+        self.root = self.path.parent if is_file else self.path
+        self.resolved_root = self.root.resolve()
         self.recursive, self.pattern = recursive, pattern
         self.backend, self.poll_ms = backend, poll_ms
         self.stop = threading.Event()
@@ -61,11 +62,21 @@ class FileWatcher:
 
     def _emit(self, change, path):
         path = Path(os.path.abspath(path))
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError:
+            # FSEvents returns canonical paths (e.g. /private/var for /var)
+            # and can include synthetic changes to an ancestor directory.
+            try:
+                relative = path.relative_to(self.resolved_root)
+            except ValueError:
+                return
+        path = self.root / relative
         if path == self.root and change in {"deleted", "renamed_old"}:
             raise RuntimeError(f"watched root removed or renamed: {self.root}")
         if self.is_file and path != self.path:
             return
-        relative = path.relative_to(self.root).as_posix()
+        relative = relative.as_posix()
         if self.pattern and not (fnmatch.fnmatch(relative, self.pattern)
                                  or fnmatch.fnmatch(path.name, self.pattern)):
             return

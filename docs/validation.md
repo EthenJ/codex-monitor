@@ -16,6 +16,8 @@ The review covered all four runtime scripts, skill instructions and references, 
 | CLI values | A leading `--` in a message/name was interpreted as an option instead of a value. | The adapter uses `--message=...` / `--thread=...`, preserves metacharacters as argv data, and rejects Windows shell shims as `--codex-bin`. |
 | File debouncing | Deletes/recreation could be suppressed; backlog draining could merge writes that occurred seconds apart. | Only repeated modifications are suppressed, using observation times. Deletes, renames and recreation remain distinct. |
 | Subscription identity | Renaming/replacing the watched root could silently leave the wrong directory observed. | Root identity is checked and replacement/removal is a fatal sensor error. |
+| macOS event paths | FSEvents returned canonical paths for a registered alias such as `/var`, and synthetic ancestor notifications could fail path filtering. | Canonical backend paths map to the registered root without resolving the event's leaf; unrelated ancestor/sibling notifications are ignored. Root replacement/removal still fails explicitly. |
+| macOS process cleanup | A group with an exited, unreaped leader could raise `EPERM` during cleanup. | Reap the exited leader and retry once. Real permission failures still propagate, including for a live leader. |
 | Backend startup | Cleanup could join an observer that had never started and obscure its original error. | Only started threads are joined; failed observer startup preserves its diagnostic. Missing optional dependencies fall back only in `auto` mode. |
 | Health state | GPU outages could imply recovery; subscription delays and directory metadata could distort progress timing. | Unknown GPU values do not prove recovery. Health timing begins after subscriptions are ready; only qualifying progress resets inactivity. Pending events are processed before health evaluation. |
 | GPU shutdown | A hung query could delay watchdog expiry; an unexpected worker exception could silently disable sampling. | Queries are cancellable independently of their ten-second limit, and unexpected worker failures are fatal sensor errors. |
@@ -27,9 +29,9 @@ Windows 11 Pro for Workstations 26H2, build 26300; Codex CLI 0.166.0.
 
 | Python runtime | Suite | Result |
 | --- | --- | --- |
-| 3.10.0, temporary compatibility runtime | 55 tests | Pass |
-| 3.12.0, temporary compatibility runtime | 55 tests | Pass |
-| 3.14.8, existing local runtime | 55 tests | Pass |
+| 3.10.0, temporary compatibility runtime | 59 tests | Pass |
+| 3.12.0, temporary compatibility runtime | 59 tests | Pass |
+| 3.14.8, existing local runtime | 59 tests | Pass |
 
 The temporary older runtimes are compatibility test fixtures, not recommended installations. Downloads and runtime files are ignored and excluded from Git. Each suite was run with resource warnings enabled as errors:
 
@@ -45,6 +47,10 @@ A native CLI negative-path probe also confirmed that `--message=--help` is parse
 ## Cross-platform CI
 
 The workflow runs Windows, Ubuntu and macOS with Python 3.10, 3.12 and 3.14: nine combinations. Optional platform dependencies are installed to exercise the native `watchdog` and PID adapters; separate tests exercise explicit snapshot mode and missing-dependency behavior. Each job has a ten-minute timeout. Check the workflow's commit-specific result before attributing a pass to a revision.
+
+The [first expanded CI run](https://github.com/EthenJ/codex-monitor/actions/runs/41144612492) passed all six Windows/Ubuntu combinations and exposed the macOS path and zombie-group cleanup defects above. These were fixed rather than skipped. Four new regressions cover canonical paths, unrelated notifications, the exited-leader retry, and genuine permission failures. The atomic-replacement health test now waits for subscription/progress acknowledgements and uses an explicit short snapshot interval; the native event test still exercises create/modify/rename/delete. The simulated GPU integration test holds its low state until the alert is delivered, so a busy consumer does not miss an artificially brief test condition.
+
+The cleanup handling is consistent with [Apple's XNU signal implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c), whose group iteration excludes zombies and can return `EPERM` when no eligible member is found. The [watchdog FSEvents adapter](https://github.com/gorakhargosh/watchdog/blob/v6.0.0/src/watchdog/observers/fsevents.py) canonicalizes its watched path and emits synthetic parent-directory changes. CI logs and local regression tests provide the release-specific evidence; these source links explain the backend behavior.
 
 ## Remaining limits
 

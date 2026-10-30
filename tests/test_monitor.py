@@ -227,8 +227,9 @@ class IntegrationTests(unittest.TestCase):
 
     def test_callbacks_receive_simulated_gpu_alert_and_recovery(self):
         calls = []
-        sequence = iter([{"0": 1}, {"0": 1}, {"0": 50}])
-        with patch("watchdog_monitor.gpu_values", side_effect=lambda *a: next(sequence, {"0": 50})), \
+        # Hold the simulated low state until its callback is observed. A fixed
+        # three-sample sequence can recover before a busy consumer runs.
+        with patch("watchdog_monitor.gpu_values", side_effect=lambda *a: {"0": 50 if calls else 1}), \
              patch("watchdog_monitor.enqueue_codex", side_effect=lambda **kw: (calls.append(kw) or True, "accepted")):
             code, records = self.run_monitor("--gpu-util-below", "10", "--gpu-below-for-ms", "15",
                                              "--gpu-sample-ms", "25", "--report-recovery", "--timeout-ms", "1000", "--max-events", "2")
@@ -243,23 +244,47 @@ class IntegrationTests(unittest.TestCase):
             root = Path(directory)
             path = root / "metrics.json"
             path.write_text("old")
+            armed, progress_seen = threading.Event(), threading.Event()
+            progress_times, deleted_at = [], []
+            start_watcher, note_progress = FileWatcher.start, HealthState.progress
+            def start_when_ready(watcher):
+                result = start_watcher(watcher)
+                armed.set()
+                return result
+            def record_progress(state, now):
+                note_progress(state, now)
+                progress_times.append(now)
+                progress_seen.set()
             def replace_then_delete():
+                if not armed.wait(2):
+                    return
                 time.sleep(.12)
                 temp = root / "temp.json"
                 temp.write_text("step=2")
                 os.replace(temp, path)
+                if not progress_seen.wait(2):
+                    return
                 time.sleep(.1)
                 path.unlink()
+                deleted_at.append(time.monotonic())
             worker = threading.Thread(target=replace_then_delete)
             worker.start()
-            start = time.monotonic()
             try:
-                code, records = self.run_monitor("--watch-file", str(path), "--stalled-for-ms", "300",
-                                                 "--watchdog-only", "--max-events", "1", "--timeout-ms", "2000")
+                # Test health transitions with an explicit short snapshot
+                # interval; native event delivery is covered by FileTests.
+                with patch.object(FileWatcher, "start", start_when_ready), \
+                     patch.object(HealthState, "progress", record_progress):
+                    code, records = self.run_monitor("--watch-file", str(path), "--stalled-for-ms", "300",
+                                                     "--file-backend", "polling", "--poll-ms", "20",
+                                                     "--watchdog-only", "--max-events", "1", "--timeout-ms", "3000")
+                finished = time.monotonic()
             finally:
                 worker.join()
             self.assertEqual(code, 0)
-            self.assertGreater(time.monotonic() - start, .35)
+            self.assertEqual(len(progress_times), 1, "replacement must count as progress; deletion must not")
+            self.assertTrue(deleted_at, "the test must delete the replaced file")
+            self.assertLess(progress_times[0], deleted_at[0])
+            self.assertGreaterEqual(finished - progress_times[0], .29)
             self.assertEqual([r["event_type"] for r in records if r["type"] == "event"], ["watchdog_stalled"])
 
     def test_failed_callback_is_nonzero_and_stops(self):

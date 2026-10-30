@@ -12,7 +12,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "codex-monitor" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -21,6 +21,7 @@ import monitor_callback
 import watchdog_monitor
 from file_events import FileWatcher
 from owned_process import run_owned
+import owned_process
 
 
 class CliBoundaryTests(unittest.TestCase):
@@ -34,6 +35,32 @@ class CliBoundaryTests(unittest.TestCase):
 
 
 class CancellationTests(unittest.TestCase):
+    def test_exited_group_permission_race_reaps_and_retries(self):
+        process = Mock(pid=12345, monitor_stopped=False, monitor_job=None)
+        process.poll.return_value = 0
+        platform = types.SimpleNamespace(name="posix", killpg=Mock(
+            side_effect=[PermissionError("zombie-only group"), ProcessLookupError("reaped")]))
+        with patch.object(owned_process, "os", platform), \
+             patch.object(owned_process, "signal", types.SimpleNamespace(SIGKILL=9)):
+            owned_process.stop_owned(process)
+        self.assertEqual(platform.killpg.call_count, 2)
+        process.poll.assert_called_once()
+        process.wait.assert_called_once_with(timeout=3)
+        self.assertTrue(process.monitor_stopped)
+
+    def test_genuine_group_permission_failure_is_not_hidden(self):
+        for status in (None, 0):
+            with self.subTest(leader_status=status):
+                process = Mock(pid=12345, monitor_stopped=False, monitor_job=None)
+                process.poll.return_value = status
+                platform = types.SimpleNamespace(name="posix", killpg=Mock(side_effect=PermissionError("denied")))
+                with patch.object(owned_process, "os", platform), \
+                     patch.object(owned_process, "signal", types.SimpleNamespace(SIGKILL=9)):
+                    with self.assertRaises(PermissionError):
+                        owned_process.stop_owned(process)
+                self.assertEqual(platform.killpg.call_count, 1 if status is None else 2)
+                self.assertFalse(process.monitor_stopped)
+
     def test_large_callback_output_is_drained_and_bounded(self):
         result = run_owned([sys.executable, "-c",
                             "import sys; sys.stdout.write('x' * 12000000 + 'DONE'); sys.stdout.flush()"], timeout=5)
@@ -61,6 +88,34 @@ class CancellationTests(unittest.TestCase):
 
 
 class BackendFailureTests(unittest.TestCase):
+    def test_ancestor_and_sibling_notifications_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "watched"
+            root.mkdir()
+            events = queue.Queue()
+            watcher = FileWatcher(root, False, events)
+            watcher._emit("modified", root.parent)
+            watcher._emit("modified", root.parent / "sibling" / "unrelated")
+            self.assertTrue(events.empty())
+            watcher._emit("created", root / "checkpoint")
+            self.assertEqual(events.get_nowait()["relative_path"], "checkpoint")
+            with self.assertRaisesRegex(RuntimeError, "root removed or renamed"):
+                watcher._emit("deleted", root)
+
+    def test_canonical_backend_paths_map_to_the_registered_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory).resolve()
+            registered_root, canonical_root = parent / "alias", parent / "canonical"
+            registered_root.mkdir()
+            events = queue.Queue()
+            with patch.object(Path, "resolve", return_value=canonical_root):
+                watcher = FileWatcher(registered_root / "metrics.json", True, events)
+            watcher._emit("modified", canonical_root / "metrics.json")
+            self.assertEqual(events.get_nowait()["path"], str(registered_root / "metrics.json"))
+            watcher._emit("deleted", registered_root / "metrics.json")
+            self.assertEqual(events.get_nowait()["change"], "deleted")
+            self.assertTrue(events.empty())
+
     def test_missing_optional_dependency_falls_back_only_in_auto_mode(self):
         import file_events
         platform = types.SimpleNamespace(name="posix", path=os.path)
