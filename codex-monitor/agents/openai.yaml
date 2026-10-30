@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Monitor"
+  short_description: "Event callbacks and training watchdogs for Codex"
+  default_prompt: "Use $codex-monitor to watch files or training health and resume this Codex session when a meaningful event occurs."
