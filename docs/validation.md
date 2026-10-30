@@ -44,6 +44,8 @@ The local system skill validator also passes. The suite includes real subprocess
 
 A native CLI negative-path probe also confirmed that `--message=--help` is parsed as message data: an all-zero, nonexistent thread UUID is rejected as a missing thread, rather than causing an argument parsing failure. No message was sent to an existing conversation by this probe.
 
+A clean Git archive of runtime revision `8fc1df6` was extracted outside the source tree into an ignored release-check directory. Its skill validator and all 59 tests passed, confirming that required helper files are included in the committed source. The eight installed skill files were synchronized to the final runtime source, checked by SHA-256, and passed both skill validators.
+
 ## Cross-platform CI
 
 The workflow runs Windows, Ubuntu and macOS with Python 3.10, 3.12 and 3.14: nine combinations. Optional platform dependencies are installed to exercise the native `watchdog` and PID adapters; separate tests exercise explicit snapshot mode and missing-dependency behavior. Each job has a ten-minute timeout. Check the workflow's commit-specific result before attributing a pass to a revision.
@@ -51,6 +53,8 @@ The workflow runs Windows, Ubuntu and macOS with Python 3.10, 3.12 and 3.14: nin
 The [first expanded CI run](https://github.com/EthenJ/codex-monitor/actions/runs/41144612492) passed all six Windows/Ubuntu combinations and exposed the macOS path and zombie-group cleanup defects above. These were fixed rather than skipped. Four new regressions cover canonical paths, unrelated notifications, the exited-leader retry, and genuine permission failures. The atomic-replacement health test now waits for subscription/progress acknowledgements and uses an explicit short snapshot interval; the native event test still exercises create/modify/rename/delete. The simulated GPU integration test holds its low state until the alert is delivered, so a busy consumer does not miss an artificially brief test condition. The slow-callback backlog regression stops after three events with a separate safety deadline, instead of requiring three 100 ms callbacks to fit a 350 ms wall-clock budget on a shared runner.
 
 The cleanup handling is consistent with [Apple's XNU signal implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c), whose group iteration excludes zombies and can return `EPERM` when no eligible member is found. The [watchdog FSEvents adapter](https://github.com/gorakhargosh/watchdog/blob/v6.0.0/src/watchdog/observers/fsevents.py) canonicalizes its watched path and emits synthetic parent-directory changes. CI logs and local regression tests provide the release-specific evidence; these source links explain the backend behavior.
+
+Runtime revision `8fc1df6` [passed all nine CI jobs](https://github.com/EthenJ/codex-monitor/actions/runs/41145420101). Windows runs all 59 tests; Ubuntu and macOS run 58 and skip the one Windows-only shell-shim test. The workflow was then updated to the official Node 24 releases [checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1) and [setup-python v7.1.0](https://github.com/actions/setup-python/releases/tag/v7.1.0), pinned by full commit hashes, to remove the observed Node 20 deprecation warning. Subsequent workflow results are linked at the top of this report.
 
 ## Remaining limits
 
