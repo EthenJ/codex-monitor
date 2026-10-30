@@ -209,7 +209,7 @@ class WatchdogRegressions(unittest.TestCase):
             finally:
                 watcher.close()
 
-    def run_events(self, items, callback=None, stalled_ms=None, start_delay=0):
+    def run_events(self, items, callback=None, stalled_ms=None, start_delay=0, timeout_ms=350, max_events=0):
         class FakeWatcher:
             backend = "test"
             def __init__(self, path, is_file, events, **kwargs):
@@ -225,8 +225,8 @@ class WatchdogRegressions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
              patch("watchdog_monitor.FileWatcher", FakeWatcher), \
              patch("watchdog_monitor.enqueue_codex", side_effect=callback or (lambda **kwargs: (True, "ok"))):
-            args = ["--watch-directory", directory, "--codex-thread", "test", "--timeout-ms", "350",
-                    "--debounce-ms", "1000"]
+            args = ["--watch-directory", directory, "--codex-thread", "test", "--timeout-ms", str(timeout_ms),
+                    "--max-events", str(max_events), "--debounce-ms", "1000"]
             if stalled_ms:
                 args.extend(["--stalled-for-ms", str(stalled_ms)])
             return capture(watchdog_monitor.main, args)
@@ -264,8 +264,9 @@ class WatchdogRegressions(unittest.TestCase):
             time.sleep(0.1)
             return True, "ok"
         code, records = self.run_events([{"change": "created"}, {"change": "deleted"}, {"change": "modified"}],
-                                       callback=slow_callback, stalled_ms=50)
+                                       callback=slow_callback, stalled_ms=50, timeout_ms=3000, max_events=3)
         self.assertEqual(code, 0)
+        self.assertEqual(records[-1]["reason"], "max_events")
         callbacks = [record for record in records if record["type"] == "event"]
         self.assertEqual([record["event_type"] for record in callbacks[:3]], ["file_change"] * 3)
 
