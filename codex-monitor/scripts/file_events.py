@@ -6,8 +6,22 @@ import os
 import queue
 import struct
 import threading
+import time
 from pathlib import Path
+from stat import S_ISDIR
 from typing import Any
+
+
+class EventQueue(queue.Queue):
+    def __init__(self, maxsize=1024):
+        super().__init__(maxsize=maxsize)
+        self.overflowed = threading.Event()
+
+    def put(self, item, block=True, timeout=None):
+        try:
+            super().put(item, block=False)
+        except queue.Full:
+            self.overflowed.set()
 
 
 class FileWatcher:
@@ -21,9 +35,12 @@ class FileWatcher:
         self.ready = threading.Event()
         self.error: Exception | None = None
         self.observer = None
+        self.root_identity = None
         self.thread = threading.Thread(target=self._run, daemon=True, name="file-events")
 
     def start(self):
+        root_stat = self.root.stat()
+        self.root_identity = (root_stat.st_dev, root_stat.st_ino)
         self.thread.start()
         if not self.ready.wait(10):
             self.close()
@@ -37,11 +54,15 @@ class FileWatcher:
         self.stop.set()
         if self.observer:
             self.observer.stop()
-            self.observer.join(timeout=3)
-        self.thread.join(timeout=3)
+            if self.observer.ident is not None:
+                self.observer.join(timeout=3)
+        if self.thread.ident is not None:
+            self.thread.join(timeout=3)
 
     def _emit(self, change, path):
         path = Path(os.path.abspath(path))
+        if path == self.root and change in {"deleted", "renamed_old"}:
+            raise RuntimeError(f"watched root removed or renamed: {self.root}")
         if self.is_file and path != self.path:
             return
         relative = path.relative_to(self.root).as_posix()
@@ -51,7 +72,13 @@ class FileWatcher:
         if path == self.root:
             return
         self.events.put({"kind": "file_change", "change": change, "path": str(path),
-                         "relative_path": relative, "backend": self.backend})
+                         "relative_path": relative, "backend": self.backend, "at": time.monotonic(),
+                         "is_directory": path.is_dir()})
+
+    def _check_root(self):
+        root_stat = self.root.stat()
+        if not S_ISDIR(root_stat.st_mode) or (root_stat.st_dev, root_stat.st_ino) != self.root_identity:
+            raise RuntimeError(f"watched root was replaced: {self.root}")
 
     def _run(self):
         try:
@@ -86,19 +113,28 @@ class FileWatcher:
             def on_any_event(self, event):
                 if event.event_type not in {"created", "modified", "deleted", "moved"}:
                     return
-                watcher._emit("renamed_old" if event.event_type == "moved" else event.event_type,
-                              event.src_path)
-                if event.event_type == "moved":
-                    watcher._emit("renamed_new", event.dest_path)
+                try:
+                    watcher._emit("renamed_old" if event.event_type == "moved" else event.event_type,
+                                  event.src_path)
+                    if event.event_type == "moved":
+                        watcher._emit("renamed_new", event.dest_path)
+                except Exception as exc:
+                    watcher.events.put({"kind": "sensor_error", "sensor": "file", "fatal": True,
+                                        "error": str(exc)})
 
         self.observer = Observer()
         self.observer.schedule(Handler(), str(self.root), recursive=self.recursive)
         self.observer.start()
         self.backend = "watchdog"
         self.ready.set()
-        self.stop.wait()
+        while not self.stop.wait(0.25):
+            self._check_root()
+            if not self.observer.is_alive() or any(
+                    not emitter.is_alive() for emitter in self.observer.emitters):
+                raise RuntimeError("file event backend stopped or watched root disappeared")
 
     def _snapshot(self):
+        self._check_root()
         paths = [self.path] if self.is_file else (self.path.rglob("*") if self.recursive else self.path.glob("*"))
         result = {}
         for path in paths:
@@ -157,15 +193,20 @@ class FileWatcher:
         pending = False
         try:
             while not self.stop.is_set():
+                self._check_root()
                 k.ResetEvent(event)
                 if not k.ReadDirectoryChangesW(handle, buffer, len(buffer), self.recursive,
                                                0x1B, None, c.byref(overlapped), None):
                     raise c.WinError(c.get_last_error())
                 pending = True
                 self.ready.set()  # subscription armed before caller starts the workload
+                check_root_at = time.monotonic() + 0.5
                 while k.WaitForSingleObject(event, 100) == 258:
                     if self.stop.is_set():
                         return
+                    if time.monotonic() >= check_root_at:
+                        self._check_root()
+                        check_root_at = time.monotonic() + 0.5
                 count = w.DWORD()
                 if not k.GetOverlappedResult(handle, c.byref(overlapped), c.byref(count), False):
                     raise c.WinError(c.get_last_error())

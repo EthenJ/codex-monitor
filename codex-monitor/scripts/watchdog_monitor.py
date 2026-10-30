@@ -17,9 +17,10 @@ import threading
 import time
 from pathlib import Path
 
-from file_events import FileWatcher
-from monitor_callback import (MAX_EVENT_CHARS, enqueue_codex, emit,
-                              invoke_callback_command, now_iso, safe_format)
+from file_events import EventQueue, FileWatcher
+from monitor_callback import (MAX_EVENT_CHARS, bounded_message, enqueue_codex, emit,
+                              invoke_callback_command, now_iso, safe_format, validate_template)
+from owned_process import ProcessCancelled, run_owned
 
 
 class HealthState:
@@ -36,6 +37,7 @@ class HealthState:
         self.low_since = None
         self.active = {}
         self.alerting = False
+        self.unknown = {"gpu_low"} & self.enabled
 
     def progress(self, now):
         self.last_progress = max(now, self.armed_at)
@@ -61,15 +63,15 @@ class HealthState:
                 if now - self.low_since >= self.dwell:
                     self.active["gpu_low"] = {"utilization": values, "threshold": self.threshold,
                                               "duration_ms": int((now - self.low_since) * 1000)}
+        if recovered or not self.alerting or "gpu_low" in self.active:
+            self.unknown.discard("gpu_low")
 
     def gpu_unknown(self):
         # Missing/invalid samples break continuous-low evidence; never count
         # provider downtime toward the low-utilization dwell time.
         self.low_since = None
         self.active.pop("gpu_low", None)
-        # Unknown is neither healthy nor a recovery notification. Re-arm from
-        # the remaining known conditions without generating a healthy edge.
-        self.alerting = bool(self.active) if self.mode == "any" else bool(self.enabled) and self.enabled.issubset(self.active)
+        self.unknown.add("gpu_low")
 
     def tick(self, now):
         if self.stalled_ms is not None and now >= self.armed_at:
@@ -77,6 +79,8 @@ class HealthState:
             if duration >= self.stalled_ms:
                 self.active["file_stalled"] = {"duration_ms": duration, "threshold_ms": self.stalled_ms}
         ready = bool(self.active) if self.mode == "any" else bool(self.enabled) and self.enabled.issubset(self.active)
+        if not ready and self.unknown:
+            return None
         if ready != self.alerting:
             self.alerting = ready
             return {"event_type": "watchdog_stalled" if ready else "watchdog_recovered",
@@ -85,11 +89,11 @@ class HealthState:
         return None
 
 
-def gpu_values(gpu_id="0", binary="nvidia-smi"):
+def gpu_values(gpu_id="0", binary="nvidia-smi", stop=None):
     argv = [binary, "--query-gpu=index,utilization.gpu", "--format=csv,noheader,nounits"]
     if gpu_id != "all":
         argv.append(f"--id={gpu_id}")
-    result = subprocess.run(argv, text=True, capture_output=True, timeout=10, check=False)
+    result = run_owned(argv, timeout=10, stop_event=stop)
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout or "nvidia-smi failed").strip())
     values = {}
@@ -109,10 +113,15 @@ def gpu_values(gpu_id="0", binary="nvidia-smi"):
 def gpu_worker(args, events, stop):
     while not stop.is_set():
         try:
-            values = gpu_values(args.gpu_id, args.nvidia_smi)
+            values = gpu_values(args.gpu_id, args.nvidia_smi, stop)
             events.put({"kind": "gpu_sample", "values": values, "at": time.monotonic()})
+        except ProcessCancelled:
+            return
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             events.put({"kind": "sensor_error", "sensor": "gpu", "error": str(exc)})
+        except Exception as exc:
+            events.put({"kind": "sensor_error", "sensor": "gpu", "fatal": True, "error": str(exc)})
+            return
         stop.wait(args.gpu_sample_ms / 1000)
 
 
@@ -232,6 +241,10 @@ def validate(args, parser):
         parser.error("--gpu-recover-above requires --gpu-util-below")
     if args.watchdog_only and not (args.stalled_for_ms or args.gpu_util_below is not None or args.pid):
         parser.error("--watchdog-only needs an inactivity/GPU/PID condition")
+    try:
+        validate_template(args.message_template)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.cwd:
         args.cwd = str(Path(args.cwd).expanduser().resolve())
         if not Path(args.cwd).is_dir():
@@ -248,7 +261,7 @@ def validate(args, parser):
 
 
 def run(args):
-    events = queue.Queue()
+    events = EventQueue()
     stop = threading.Event()
     watcher = None
     workers = []
@@ -267,27 +280,35 @@ def run(args):
     def log(kind, **data):
         emit({"type": kind, "timestamp": now_iso(), "source": args.source, "pid": args.pid, **data})
 
-    def dispatch(event_type, details):
+    def dispatch(event_type, details, observed_at=None):
         nonlocal count, errors, reason
         event_text = json.dumps(details, ensure_ascii=False, separators=(",", ":"))[:MAX_EVENT_CHARS]
-        # Key on the path, not the change kind: one save can surface as
-        # created+modified and must not wake Codex twice.
-        key = (event_type, details.get("path"))
-        now = time.monotonic()
-        if event_type == "file_change" and (now - last_callback.get(key, -float("inf"))) * 1000 < args.debounce_ms:
+        if time.monotonic() - started >= args.timeout_ms / 1000:
             return
-        last_callback[key] = now
+        path, change = details.get("path"), details.get("change")
+        key = (path, "write" if change in {"created", "modified", "renamed_new"} else change)
+        now = observed_at if observed_at is not None else time.monotonic()
+        if event_type == "file_change":
+            if change == "modified" and (now - last_callback.get(key, -float("inf"))) * 1000 < args.debounce_ms:
+                return
+            if change in {"deleted", "renamed_old"}:
+                last_callback.pop((path, "write"), None)
+            if len(last_callback) >= 1024:
+                last_callback.clear()
+            last_callback[key] = now
         count += 1
         payload = {"event_type": event_type, "event": event_text, "timestamp": now_iso(),
                    "source": args.source, "pid": args.pid, "event_index": count, **details}
-        message = safe_format(args.message_template, payload)
+        message = bounded_message(safe_format(args.message_template, payload))
         payload["message"] = message
         log("event", **{k: v for k, v in payload.items() if k not in {"source", "timestamp", "pid"}})
         if args.callback_command:
-            ok, output = invoke_callback_command(command=args.callback_command, payload=payload, cwd=args.cwd, dry_run=args.dry_run)
+            ok, output = invoke_callback_command(command=args.callback_command, payload=payload, cwd=args.cwd, dry_run=args.dry_run,
+                                                  timeout=max(0.001, min(30, args.timeout_ms / 1000 - (time.monotonic() - started))))
         else:
             ok, output = enqueue_codex(thread=args.codex_thread, message=message, codex_bin=args.codex_bin,
-                                       cwd=args.cwd, dry_run=args.dry_run)
+                                       cwd=args.cwd, dry_run=args.dry_run,
+                                       timeout=max(0.001, min(30, args.timeout_ms / 1000 - (time.monotonic() - started))))
         errors = errors or not ok
         log("callback", event_type=event_type, event_index=count, ok=ok, output=output[-MAX_EVENT_CHARS:])
         if not ok and args.stop_on_callback_error:
@@ -310,6 +331,9 @@ def run(args):
             worker.start()
             if not ready.wait(10):
                 raise RuntimeError("process watcher did not become ready")
+        started = time.monotonic()
+        health = HealthState(enabled, args.dead_if, started, args.warmup_ms, args.stalled_for_ms,
+                             args.gpu_util_below, args.gpu_below_for_ms, args.gpu_recover_above, args.gpu_match)
         if args.gpu_util_below is not None:
             worker = threading.Thread(target=gpu_worker, args=(args, events, stop), daemon=True)
             workers.append(worker)
@@ -317,6 +341,8 @@ def run(args):
         log("started", path=str(args.watch_file or args.watch_directory or ""), enabled_conditions=enabled,
             dead_if=args.dead_if, timeout_ms=args.timeout_ms, warmup_ms=args.warmup_ms)
         while not stop.is_set():
+            if events.overflowed.is_set():
+                raise RuntimeError("event queue overflow; observation is incomplete")
             now = time.monotonic()
             remaining = args.timeout_ms / 1000 - (now - started)
             if remaining <= 0:
@@ -329,10 +355,12 @@ def run(args):
             now = time.monotonic()
             if kind == "file_change":
                 # Deletion/rename-away are changes, but do not prove progress.
-                if item["change"] in {"created", "modified", "renamed_new"}:
-                    health.progress(now)
+                if item["change"] in {"created", "modified", "renamed_new"} and not (
+                        item["change"] == "modified" and item.get("is_directory")):
+                    health.progress(item.get("at", now))
                 if not args.watchdog_only:
-                    dispatch("file_change", {k: v for k, v in item.items() if k != "kind"})
+                    dispatch("file_change", {k: v for k, v in item.items() if k not in {"kind", "at"}},
+                             observed_at=item.get("at"))
             elif kind == "gpu_sample":
                 if sensor_errors.pop("gpu", None):
                     log("sensor_recovered", sensor="gpu")
@@ -353,7 +381,7 @@ def run(args):
                 if item.get("fatal"):
                     reason, errors = "sensor_error", True
                     break
-            if not stop.is_set():
+            if not stop.is_set() and events.empty():
                 transition = health.tick(now)
                 if transition and (transition["event_type"] != "watchdog_recovered" or args.report_recovery):
                     dispatch(transition.pop("event_type"), transition)

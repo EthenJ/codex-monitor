@@ -9,6 +9,7 @@ does not poll a PID or repeatedly ask Codex for status.
 from __future__ import annotations
 
 import argparse
+import codecs
 import datetime as dt
 import json
 import os
@@ -16,7 +17,7 @@ import queue
 import re
 import shlex
 import shutil
-import signal
+import string
 import subprocess
 import sys
 import threading
@@ -24,10 +25,25 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from owned_process import run_owned, start_owned, stop_owned
+
 
 DEFAULT_TIMEOUT_MS = 300_000
 MAX_TIMEOUT_MS = 1_800_000
 MAX_EVENT_CHARS = 16_000
+MAX_MESSAGE_CHARS = 6000
+
+
+def bounded_message(message: str) -> str:
+    if len(message) > MAX_MESSAGE_CHARS:
+        return message[:MAX_MESSAGE_CHARS] + "\n[truncated]"
+    return message
+
+
+def validate_template(template: str) -> None:
+    for _, field, specification, conversion in string.Formatter().parse(template):
+        if field is not None and (not field.isidentifier() or specification or conversion):
+            raise ValueError("use plain {field} placeholders without conversions or format specifications")
 
 
 def now_iso() -> str:
@@ -68,27 +84,10 @@ def event_record(
 
 
 def terminate_process(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == "nt":
-            # Terminate the complete tree so a watcher cannot outlive the monitor.
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-        else:
-            os.killpg(proc.pid, signal.SIGTERM)
-    except (OSError, subprocess.SubprocessError):
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+    stop_owned(proc)
 
 
-def start_process(command: str, cwd: str | None) -> subprocess.Popen[str]:
+def start_process(command: str, cwd: str | None, encoding: str = "utf-8") -> subprocess.Popen[str]:
     kwargs: dict[str, Any] = {
         "shell": True,
         "cwd": cwd or None,
@@ -96,23 +95,37 @@ def start_process(command: str, cwd: str | None) -> subprocess.Popen[str]:
         "stderr": subprocess.STDOUT,
         "stdin": subprocess.DEVNULL,
         "text": True,
+        "encoding": encoding,
+        "errors": "replace",
         "bufsize": 1,
     }
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
-    return subprocess.Popen(command, **kwargs)
+    return start_owned(command, **kwargs)
 
 
-def stream_lines(proc: subprocess.Popen[str], output: queue.Queue[tuple[str, str | None]]) -> None:
+def stream_lines(proc: subprocess.Popen[str], output: queue.Queue[tuple[str, str | None]],
+                 stop: threading.Event, pattern: re.Pattern[str]) -> None:
     assert proc.stdout is not None
+    def publish(kind, value):
+        while not stop.is_set():
+            try:
+                output.put((kind, value), timeout=0.1)
+                return
+            except queue.Full:
+                continue
     try:
-        for line in proc.stdout:
-            output.put(("line", line.rstrip("\r\n")))
+        while not stop.is_set():
+            line = proc.stdout.readline(MAX_EVENT_CHARS + 1)
+            if not line:
+                break
+            if len(line.rstrip("\r\n")) > MAX_EVENT_CHARS:
+                raise ValueError(f"command output line exceeds {MAX_EVENT_CHARS} characters")
+            line = line.rstrip("\r\n")
+            if pattern.search(line):
+                publish("line", line)
+    except Exception as exc:
+        publish("error", str(exc))
     finally:
-        proc.wait()
-        output.put(("eof", None))
+        publish("eof", None)
 
 
 def safe_format(template: str, values: dict[str, Any]) -> str:
@@ -151,22 +164,17 @@ def enqueue_codex(
     codex_bin: str | None,
     cwd: str | None,
     dry_run: bool,
+    timeout: float = 30,
 ) -> tuple[bool, str]:
-    argv = [codex_executable(codex_bin), "queue", "--thread", thread, "--message", message, "--resume"]
+    executable = codex_executable(codex_bin)
+    if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
+        return False, "--codex-bin must point to the native codex.exe, not a shell shim"
+    argv = [executable, "queue", f"--thread={thread}", f"--message={bounded_message(message)}", "--resume"]
     if dry_run:
         return True, shlex.join(argv)
     try:
-        result = subprocess.run(
-            argv,
-            cwd=cwd or None,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        result = run_owned(argv, cwd=cwd, timeout=timeout)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     output = (result.stdout or "").strip()
     if result.returncode != 0:
@@ -184,23 +192,20 @@ def invoke_callback_command(
     payload: dict[str, Any],
     cwd: str | None,
     dry_run: bool,
+    timeout: float = 30,
 ) -> tuple[bool, str]:
     """Invoke an optional user callback with the event JSON on stdin."""
     if dry_run:
         return True, f"callback-command: {command}"
     try:
-        result = subprocess.run(
+        result = run_owned(
             command,
             shell=True,
             cwd=cwd or None,
             input=json.dumps(payload, ensure_ascii=True),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=30,
+            timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     output = (result.stdout or "").strip()
     if result.returncode != 0:
@@ -212,6 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--command", required=True, help="Long-running command whose output is the event source")
     parser.add_argument("--match", required=True, help="Regular expression matched against each output line")
+    parser.add_argument("--encoding", default="utf-8", help="Command output encoding; invalid bytes are replaced")
     parser.add_argument("--codex-thread", help="Codex thread UUID or exact session name; defaults to CODEX_THREAD_ID")
     parser.add_argument(
         "--callback-command",
@@ -254,33 +260,46 @@ def validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple
         parser.error(f"invalid --match regex: {exc}")
     if args.cwd and not Path(args.cwd).is_dir():
         parser.error(f"--cwd is not a directory: {args.cwd}")
+    try:
+        codecs.lookup(args.encoding)
+        validate_template(args.message_template)
+    except (LookupError, ValueError) as exc:
+        parser.error(str(exc))
     return args.codex_thread, pattern
 
 
 def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
-    proc = start_process(args.command, args.cwd)
+    proc = start_process(args.command, args.cwd, args.encoding)
     started = time.monotonic()
-    output: queue.Queue[tuple[str, str | None]] = queue.Queue()
-    reader = threading.Thread(target=stream_lines, args=(proc, output), daemon=True)
-    reader.start()
-    emit(event_record("started", source=args.source, command=args.command, pid=proc.pid))
+    output: queue.Queue[tuple[str, str | None]] = queue.Queue(maxsize=256)
+    stop = threading.Event()
+    reader = threading.Thread(target=stream_lines, args=(proc, output, stop, pattern), daemon=True)
 
     matched = 0
     last_event: str | None = None
     last_event_at = 0.0
     saw_eof = False
     exit_reason = "completed"
+    callback_failed = False
     try:
+        reader.start()
+        emit(event_record("started", source=args.source, command=args.command, pid=proc.pid))
         while True:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             if elapsed_ms >= args.timeout_ms:
                 exit_reason = "deadline"
-                terminate_process(proc)
                 break
             try:
                 kind, line = output.get(timeout=0.25)
             except queue.Empty:
+                if saw_eof and proc.poll() is not None:
+                    break
                 continue
+            if kind == "error":
+                exit_reason = "monitor_error"
+                emit(event_record("monitor_error", source=args.source, command=args.command,
+                                  pid=proc.pid, error=line))
+                break
             if kind == "eof":
                 saw_eof = True
                 try:
@@ -305,6 +324,7 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
             last_event_at = current
             matched += 1
             values = {
+                "event_type": "command_output",
                 "event": line,
                 "timestamp": now_iso(),
                 "source": args.source,
@@ -312,9 +332,10 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
                 "pid": proc.pid,
                 "event_index": matched,
             }
-            message = safe_format(args.message_template, values)
+            message = bounded_message(safe_format(args.message_template, values))
             emit(event_record("event", source=args.source, command=args.command, pid=proc.pid, event=line, event_index=matched))
             payload = {
+                "event_type": "command_output",
                 "timestamp": values["timestamp"],
                 "source": args.source,
                 "event": line,
@@ -329,6 +350,7 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
                     payload=payload,
                     cwd=args.cwd,
                     dry_run=args.dry_run,
+                    timeout=max(0.001, min(30, args.timeout_ms / 1000 - (time.monotonic() - started))),
                 )
             else:
                 ok, callback_output = enqueue_codex(
@@ -337,6 +359,7 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
                     codex_bin=args.codex_bin,
                     cwd=args.cwd,
                     dry_run=args.dry_run,
+                    timeout=max(0.001, min(30, args.timeout_ms / 1000 - (time.monotonic() - started))),
                 )
             emit(
                 event_record(
@@ -351,25 +374,22 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
                     output=callback_output[-MAX_EVENT_CHARS:] if callback_output else "",
                 )
             )
+            callback_failed = callback_failed or not ok
             if not ok and args.stop_on_callback_error:
                 exit_reason = "callback_error"
-                terminate_process(proc)
                 break
             if args.max_events and matched >= args.max_events:
                 exit_reason = "max_events"
-                terminate_process(proc)
                 break
     except KeyboardInterrupt:
         exit_reason = "cancelled"
-        terminate_process(proc)
     finally:
-        if proc.poll() is None:
-            terminate_process(proc)
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        reader.join(timeout=1)
+        stop.set()
+        terminate_process(proc)
+        if reader.ident is not None:
+            reader.join(timeout=1)
+        if not reader.is_alive():
+            proc.stdout.close()
 
     return_code = proc.returncode
     emit(
@@ -384,7 +404,7 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
             saw_eof=saw_eof,
         )
     )
-    if exit_reason == "callback_error" or (exit_reason == "completed" and return_code not in (0, None)):
+    if callback_failed or exit_reason in {"callback_error", "monitor_error"} or (exit_reason == "completed" and return_code not in (0, None)):
         return 1
     return 0
 

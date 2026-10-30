@@ -1,5 +1,7 @@
 # codex-monitor
 
+[![Tests](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml/badge.svg)](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml)
+
 Event-driven sidecars for Codex sessions: observe command output, file and directory changes, training progress, GPU utilization, and process exit, then queue a follow-up message to the same Codex thread. The monitor process does the waiting; Codex is called only when a meaningful event or health transition occurs.
 
 This is the local CLI implementation of the behavior Claude Code ships as its **Monitor tool**. A monitor starts before the workload, receives events from the workload or OS, and calls:
@@ -12,7 +14,7 @@ The repository is the Codex counterpart of Claude Code's **Monitor tool**, and i
 
 Naming note: this tool monitors **your workload** - command output, files, training health, GPU, a PID - and wakes Codex when something happens. It does not inspect or supervise the Codex session itself; the session is the *destination* of the callback, not the thing being observed.
 
-**Current status: tested on Windows.** See [Platform status](#platform-status); Linux/macOS and live-GPU paths are implemented but not validated on real hardware here.
+**Current status: tested on Windows.** The published baseline also passed Ubuntu CI. See [Platform status](#platform-status) for the distinction between that baseline and this local review revision.
 
 ## Features
 
@@ -24,7 +26,7 @@ Naming note: this tool monitors **your workload** - command output, files, train
 - Existing PID observation without killing or restarting the observed process.
 - Edge-triggered `watchdog_stalled` and `watchdog_recovered` events.
 - JSONL lifecycle and callback logs; callback payloads arrive on stdin for custom callbacks.
-- `--dry-run`, callback timeouts, bounded retries (none by default), and safe process/session diagnostics.
+- `--dry-run`, callback timeouts, no automatic retries, and explicit process/session diagnostics.
 
 ## Requirements
 
@@ -68,6 +70,8 @@ python .\codex-monitor\scripts\monitor_callback.py `
 
 Use `--dry-run` to verify the callback command without submitting it. The monitor owns and stops this child command on cancellation, event limit, or deadline.
 
+Command output defaults to UTF-8 with replacement for invalid bytes; pass `--encoding gb18030` (or another Python codec) for a legacy producer. A line longer than 16,000 characters produces an explicit `monitor_error`. The matched-line queue is bounded and applies backpressure. Messages sent to Codex are capped at 6,000 characters with a truncation marker to fit Windows command-line limits.
+
 ## Directory events
 
 Use `watchdog_monitor.py` for checkpoints or generated artifacts:
@@ -81,6 +85,8 @@ python .\codex-monitor\scripts\watchdog_monitor.py `
 ```
 
 The watcher is armed before the `started` event is emitted. On Windows the backend is `ReadDirectoryChangesW`; on other platforms the JSONL `backend` record identifies `watchdog` or `snapshot-fallback`.
+
+Debouncing uses observation times to suppress repeated modifications (including create-then-modify noise) for a path, so draining a callback backlog does not collapse writes that happened seconds apart. Deletes, renames, and recreation remain distinct events. Replacing or renaming the watched root is a fatal sensor error; re-register the watcher for its new location. A create/modify notification does not prove a checkpoint is complete; prefer a producer's completion event or atomic rename into a final filename before loading the artifact.
 
 ## Training watchdog
 
@@ -114,6 +120,10 @@ python .\codex-monitor\scripts\watchdog_monitor.py `
 
 The callback JSON includes `event_type`, `event`, `timestamp`, `source`, `event_index`, `pid`, `message`, and source-specific evidence such as `path`, `change`, `conditions`, `utilization`, or `returncode`. Event data is passed on stdin rather than interpolated into the callback shell command.
 
+Callbacks are synchronous, with a timeout of 30 seconds or the remaining monitor lifetime, whichever is shorter. JSON arrives through a temporary file attached to stdin, avoiding blocking pipe writes on older Windows Python versions when a callback does not read its input. Output is continuously drained into a bounded 64 KiB tail rather than accumulated in memory or a growing log file. Owned commands and callbacks use a Windows Job Object or a POSIX process group; their remaining descendants are stopped when they finish or time out. Hand long-running recovery work to an external supervisor rather than launching it as an untracked callback child. These ownership rules never apply to a training process supplied with `--pid`.
+
+The file/GPU/PID event queue holds at most 1,024 items. An overflow stops observation with `monitor_error` and a nonzero exit code rather than silently dropping events or allowing unbounded memory growth. Keep callback work short. Message templates accept plain `{field}` placeholders and escaped braces (`{{` / `}}`); malformed templates are rejected before observation starts.
+
 ## Test and validation
 
 ```powershell
@@ -127,18 +137,21 @@ python .\codex-monitor\scripts\watchdog_monitor.py --help
 
 | Platform | Status |
 | --- | --- |
-| Windows 11 Pro for Workstations 26H2 (build 26300) | **Tested.** Python 3.14.8, Codex CLI 0.166.0. All 24 tests pass. |
-| Linux / macOS | **Not tested locally.** CI job configured; `watchdog` backend and `pidfd_open`/`psutil` paths are unverified on real hosts. |
-| Live NVIDIA GPU | **Not tested.** This machine has no GPU and no `nvidia-smi`; GPU alert, recovery, hysteresis, and `all`/`any` behavior were exercised with deterministic mocks. |
+| Windows 11 Pro for Workstations 26H2 (build 26300) | **Tested locally.** All 55 tests pass on Python 3.10.0, 3.12.0, and 3.14.8. Codex CLI 0.166.0. |
+| Windows / Ubuntu / macOS CI | Nine jobs cover Python 3.10, 3.12, and 3.14 on all three platforms, with native file backends and PID waiting. See [workflow results](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) for each revision. |
+| Live NVIDIA GPU | **Not tested.** `nvidia-smi` is unavailable here; GPU alert, recovery, hysteresis, and `all`/`any` behavior were exercised with deterministic mocks. |
+| Live Codex wake-up | **Not verified end to end.** Tests validate callback payloads, CLI argv, and failure/warning handling; they do not prove that a real idle thread executes a follow-up turn. |
 
-What the Windows run covered: native `ReadDirectoryChangesW` create/modify/rename/delete notifications, single-file watching that did not exist at registration, file-stall and recovery transitions, atomic replacement re-arming, callback JSON containing Chinese text, coalescing one save's create+modify into a single callback, `--dry-run` never invoking Codex, simulated low-GPU alerts and recovery edges, PID exit handling, callback failure/`queue --resume` warning handling, the check that event text stays argv data on the `codex queue` path, and the invariant that watchdog expiry, event limits, and cancellation never kill the observed training PID.
+What the Windows run covered: native `ReadDirectoryChangesW` create/modify/rename/delete notifications, root replacement detection, single-file watching that did not exist at registration, file-stall and recovery transitions, atomic replacement re-arming, Chinese output and callback JSON, backlog-aware write debouncing that preserves deletion/recreation, `--dry-run` on an actual triggered event, simulated GPU health and sensor outages, PID exit, failed callbacks, unread callback input, warning diagnostics, bounded queues/messages, subscription timing, callback child cleanup, startup log failure cleanup, and the invariant that watchdog expiry, event limits, and cancellation leave the observed training PID running.
+
+The [validation report](docs/validation.md) records the audit findings, commands, platform boundaries, cancellation tests, and the distinction between callback transport tests and a live Codex turn.
 
 Before relying on a live GPU rule, validate it locally with `--dry-run` on the target machine. Before relying on Linux/macOS native file events, let the CI matrix (or a local run with `pip install -e ".[platform]"`) exercise that backend.
 
 ## Limitations
 
 - This is not a native Codex tool. It resumes a thread through `codex queue --resume`, so wake-up depends on a reachable local daemon/session. A queued-but-not-resumed message is reported as a callback failure, not as success.
-- Delivery is at-most-once with no durable queue. A crash between the event and the callback can drop that event; use a heartbeat file plus the watchdog rather than assuming exactly-once.
+- Delivery is best-effort with no durable outbox or end-to-end deduplication. A crash can lose an event; filesystem backends can coalesce or duplicate notifications. A failed/timed-out callback may already have submitted its message, so inspect the destination before manually retrying.
 - Heuristics are evidence of a *suspected* stall. File inactivity can be legitimate I/O or validation; GPU samples can be masked by co-tenants on a shared card.
 - Only NVIDIA GPUs are supported (`nvidia-smi`). Remote/cluster training needs the sidecar deployed on the training host.
 - The watchdog observes; it never kills or restarts a run. Any restart policy must be explicit, bounded, and user-requested.
@@ -155,9 +168,14 @@ codex-monitor/
 └── scripts/
     ├── file_events.py
     ├── monitor_callback.py
+    ├── owned_process.py
     └── watchdog_monitor.py
 tests/test_monitor.py
+tests/test_regressions.py
+tests/test_second_review.py
+tests/test_release_review.py
 tools/validate_skill.py
+docs/validation.md
 ```
 
 The design notes in `references/` explain the Claude Code naming, Codex queue/resume behavior, Agents API continuation mapping, watchdog state machine, and platform dependencies.

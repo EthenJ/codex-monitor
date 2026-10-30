@@ -90,7 +90,9 @@ class HealthTests(unittest.TestCase):
         state.gpu_sample(20, {"0": 1})
         self.assertIsNone(state.tick(20))
         state.gpu_sample(21, {"0": 1})
-        self.assertIsNotNone(state.tick(21))
+        self.assertIsNone(state.tick(21))
+        state.gpu_sample(22, {"0": 50})
+        self.assertEqual(state.tick(22)["event_type"], "watchdog_recovered")
 
     def test_multi_gpu_all_and_any(self):
         for mode, expected in [("all", False), ("any", True)]:
@@ -102,13 +104,13 @@ class HealthTests(unittest.TestCase):
 
 class GpuTests(unittest.TestCase):
     def test_gpu_all_omits_invalid_all_selector(self):
-        with patch("watchdog_monitor.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "0, 5\n1, 80\n", "")) as run:
+        with patch("watchdog_monitor.run_owned", return_value=subprocess.CompletedProcess([], 0, "0, 5\n1, 80\n", "")) as run:
             self.assertEqual(gpu_values("all"), {"0": 5.0, "1": 80.0})
             self.assertFalse(any(arg.startswith("--id=") for arg in run.call_args.args[0]))
 
     def test_invalid_metrics_are_unknown_not_zero(self):
         for raw in ["0, N/A", "0, nan", "0, 200", "", "invalid"]:
-            with self.subTest(raw=raw), patch("watchdog_monitor.subprocess.run", return_value=subprocess.CompletedProcess([], 0, raw, "")):
+            with self.subTest(raw=raw), patch("watchdog_monitor.run_owned", return_value=subprocess.CompletedProcess([], 0, raw, "")):
                 with self.assertRaises(ValueError):
                     gpu_values()
 
@@ -284,20 +286,22 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(changes), 1, changes)
 
     def test_dry_run_never_spawns_codex(self):
-        with patch("monitor_callback.subprocess.run", side_effect=AssertionError("codex must not run")):
-            code, records = self.run_monitor(
-                "--watch-directory", str(Path(__file__).resolve().parent),
-                "--pattern", "*.no-such-file", "--max-events", "1", "--timeout-ms", "300")
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("monitor_callback.run_owned", side_effect=AssertionError("codex must not run")):
+            code, records = self.run_monitor("--watch-file", str(Path(directory) / "heartbeat"),
+                                             "--stalled-for-ms", "50", "--watchdog-only",
+                                             "--max-events", "1", "--timeout-ms", "1000")
         self.assertEqual(code, 0)
-        self.assertEqual(records[-1]["reason"], "deadline")
+        self.assertEqual(records[-1]["reason"], "max_events")
+        self.assertEqual(len([record for record in records if record["type"] == "callback"]), 1)
 
     def test_codex_argv_preserves_event_as_data(self):
         message = '训练 & echo bad | $(secret) "quoted"'
-        with patch("monitor_callback.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "ok")) as run:
+        with patch("monitor_callback.run_owned", return_value=subprocess.CompletedProcess([], 0, "ok")) as run:
             ok, _ = enqueue_codex(thread="original-thread", message=message, codex_bin="codex-native",
                                   cwd=None, dry_run=False)
             self.assertTrue(ok)
-            self.assertEqual(run.call_args.args[0], ["codex-native", "queue", "--thread", "original-thread", "--message", message, "--resume"])
+            self.assertEqual(run.call_args.args[0], ["codex-native", "queue", "--thread=original-thread", f"--message={message}", "--resume"])
             self.assertNotIn("shell", run.call_args.kwargs)
 
     def test_native_codex_resolution_on_this_host(self):
@@ -305,7 +309,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertTrue(Path(codex_executable(None)).is_file())
 
     def test_queue_resume_warning_is_not_reported_as_wakeup_success(self):
-        with patch("monitor_callback.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "warning: failed to resume thread")):
+        with patch("monitor_callback.run_owned", return_value=subprocess.CompletedProcess([], 0, "warning: failed to resume thread")):
             ok, diagnostic = enqueue_codex(thread="thread", message="event", codex_bin="codex-native", cwd=None, dry_run=False)
             self.assertFalse(ok)
             self.assertIn("failed to resume", diagnostic)
