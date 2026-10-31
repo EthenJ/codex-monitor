@@ -32,7 +32,7 @@ test('MCP disconnect/reconnect retains observer and launcher identity', { timeou
     await open(); const tools = await client.listTools(); assert.equal(tools.tools.length, 7);
     const result = await client.callTool({ name: 'monitor_start', arguments: { thread_id: thread, name: 'survival', kind: 'watchdog',
       options: { cwd: root, watch_file: path.join(root, 'metrics'), timeout_ms: 15000 }, instructions: 'Fixture', notify_on: ['monitor_expired'] } });
-    assert.equal(result.isError, undefined); const monitor = result.structuredContent; assert.equal(monitor.state, 'armed');
+    assert.equal(result.isError, undefined, JSON.stringify(result)); const monitor = result.structuredContent; assert.equal(monitor.state, 'armed');
     await client.close(); await open();
     const status = await client.callTool({ name: 'monitor_status', arguments: { thread_id: thread } });
     assert.equal(status.structuredContent.monitors[0].id, monitor.id); assert.equal(status.structuredContent.monitors[0].state, 'armed');
@@ -84,7 +84,7 @@ test('observer survives forced cleanup of a strict Windows MCP host job', { skip
     const output = await capture(process.execPath, [fileURLToPath(new URL('./fixtures/job-client.mjs', import.meta.url)),
       fileURLToPath(new URL('../../codex-monitor/runtime/server.js', import.meta.url)), thread, root],
       { env: { ...process.env, CODEX_MONITOR_HOME: state } });
-    const result = JSON.parse(output); assert.equal(result.isError, undefined); assert.equal(result.structuredContent.state, 'armed');
+    const result = JSON.parse(output); assert.equal(result.isError, undefined, JSON.stringify(result)); assert.equal(result.structuredContent.state, 'armed');
     const snapshot = await rpc(directory, 'status'); assert.equal(snapshot.monitors[0].state, 'armed');
     assert.equal(snapshot.monitors[0].id, result.structuredContent.id);
     await rpc(directory, 'stop', { monitor_id: snapshot.monitors[0].id });
