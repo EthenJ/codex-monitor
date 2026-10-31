@@ -142,6 +142,17 @@ test('retry classification excludes permanent, policy, budget and unknown errors
   assert.equal(retryable({ codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } }), true);
   assert.equal(retryable({ codexErrorInfo: 'rateLimitExceeded' }), false);
 });
+test('only the observed provider-busy other error is eligible for recovery', () => {
+  const message = 'stream disconnected before completion: Our servers are currently busy. Please try again in a moment.';
+  assert.equal(retryable({ codexErrorInfo: 'other', message }), true);
+  assert.equal(retryable({ codexErrorInfo: 'serverOverloaded' }), true);
+  for (const code of [undefined, 'unauthorized', 'usageLimitExceeded', 'misalignmentPolicyViolation']) {
+    assert.equal(retryable({ codexErrorInfo: code, message }), false);
+  }
+  for (const other of ['Our servers are currently busy.', message + ' Account blocked.', 'Quoted error: ' + message, 'stream disconnected before completion: Unknown error.']) {
+    assert.equal(retryable({ codexErrorInfo: 'other', message: other }), false);
+  }
+});
 async function recoveryFixture(t) {
   const host = new Host(); host.thread = randomUUID(); host.turn = { id: 'failed', rootTurnId: 'failed', status: 'failed', error: { codexErrorInfo: 'serverOverloaded' } };
   const recovery = new Recovery(host.thread, async () => host, () => {}, () => false);

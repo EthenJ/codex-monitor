@@ -16,7 +16,7 @@ npm run build
 CODEX_MONITOR_TEST_NATIVE=1 node --test --test-timeout=25000 tests/node/*.test.mjs
 ```
 
-Native tests create isolated Codex homes and a synthetic local Responses endpoint. They do not use your account or contact a paid model. On Linux, two Windows Job Object tests and the opt-in physical GPU test are expected to be skipped: currently 74 tests, 71 passing and three skips with native tests enabled. Record the commit (`git rev-parse HEAD`), `git status --short`, Node/Codex versions and complete output when reporting a failure.
+Native tests create isolated Codex homes and a synthetic local Responses endpoint. They do not use your account or contact a paid model. On Linux, two Windows Job Object tests and the opt-in physical GPU test are expected to be skipped: currently 76 tests, 73 passing and three skips with native tests enabled. Record the commit (`git rev-parse HEAD`), `git status --short`, Node/Codex versions and complete output when reporting a failure.
 
 On a host with working NVIDIA drivers, also run:
 
@@ -25,7 +25,7 @@ nvidia-smi
 CODEX_MONITOR_TEST_NATIVE=1 CODEX_MONITOR_TEST_GPU=1 node --test --test-timeout=25000 tests/node/*.test.mjs
 ```
 
-This should pass 72 tests with only the two Windows skips. GPU checks only query existing devices and run a finite quiet observer; they do not create GPU load or signal training processes. They check selections and sampling, while deterministic fixtures cover low-utilization/recovery transitions. Set `CODEX_MONITOR_NVIDIA_SMI` if the executable is outside `PATH`. See the [GPU validation guide](gpu-validation.md) for a read-only real transition probe and simulated driver failures.
+This should pass 74 tests with only the two Windows skips. GPU checks only query existing devices and run a finite quiet observer; they do not create GPU load or signal training processes. They check selections and sampling, while deterministic fixtures cover low-utilization/recovery transitions. Set `CODEX_MONITOR_NVIDIA_SMI` if the executable is outside `PATH`. See the [GPU validation guide](gpu-validation.md) for a read-only real transition probe and simulated driver failures.
 
 For an Ubuntu 24.04 container run, with Docker installed and accessible to your user:
 

@@ -110,7 +110,9 @@ Recovery requires separate user authorization:
 }
 ```
 
-These defaults allow five attempts with 15/30/60/120/240-second delays. Timers read the local daemon, not the model. Codex retries first. Only verified terminal failed turns with transient connection/stream/server failures qualify. HTTP 401/403, budgets, usage limits, policy blocks and unknown errors do not. Rate-limit retries require opt-in. Codex 0.166.0 labels some truncated HTTP bodies `other`; only its narrowly matched observed transport signature is eligible.
+These defaults allow five attempts with 15/30/60/120/240-second delays. Timers read the local daemon, not the model. Codex retries first. Only verified terminal failed turns with transient connection/stream/server failures qualify. HTTP 401/403, budgets, usage limits, policy blocks and unknown errors do not. Rate-limit retries require opt-in. Codex 0.166.0 labels some truncated HTTP bodies `other`; narrowly matched observed transport signatures are eligible.
+
+Recovery also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. This does not make arbitrary `other` errors retryable. Recovery must already be enabled; delivery and observation alone do not enable it.
 
 Before retry, re-read latest turn, runtime status and goal. Interrupted turns, paused/ended goals, exhausted budget and new active work prevent recovery. Manual interruption disables the supervisor until re-enabled. Plugin waits suspend recovery. Silent long tools are not interrupted. Recovery continues the task after reconciling completed effects; it does not replay commands or restart training.
 

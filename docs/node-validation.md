@@ -1,5 +1,11 @@
 # Node v0.3 preview validation
 
+## Public v0.2 release follow-up
+
+The public package version is now **0.2.0**, with tag `v0.2`; the historical preview labels below do not denote public releases. During release preparation, a real failed turn contained `codexErrorInfo: "other"` and the exact message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` The previous classifier rejected it. The current classifier accepts only that additional exact message, without accepting arbitrary unknown errors or overriding permanent error codes. The task's recovery supervisor was disabled when the real failure occurred.
+
+A synthetic SSE `response.failed` provider reproduced the same message and `other` classification through Codex 0.166.0. The native test verified a terminal failure, backoff, one recovery submission and successful completion. Unknown/quoted/suffixed messages and permanent error codes remain rejected. Windows with native tests enabled passed **76 tests: 72 passed, four expected skips**. Release-specific CI is recorded in the [release notes](releases/v0.2.md).
+
 Validation date: 2026-11-01. This preview is developed on `develop`. Deployment `main` and the published v0.1 release are unchanged. The [Python v0.2 report](plugin-validation.md) is historical and does not establish Node compatibility.
 
 ## File observation reconciliation after the Ubuntu review

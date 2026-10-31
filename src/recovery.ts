@@ -4,9 +4,14 @@ import { Json, bounded, id, integer, now, text } from './common.js';
 export function retryable(error: Json | null, allowRateLimit = false): boolean {
   const code = error?.codexErrorInfo;
   if (typeof code === 'string') {
-    // Codex 0.166.0 reports a real truncated HTTP response body as `other`.
-    // Accept only this observed host transport signature, not arbitrary errors.
-    if (code === 'other' && /^stream disconnected before completion: Transport error: network error: /i.test(error?.message || '')) return true;
+    // Codex 0.166.0 can flatten transport failures and provider-busy stream
+    // errors into `other`. Accept only observed signatures, not arbitrary text.
+    if (code === 'other') {
+      const message = error?.message;
+      if (typeof message !== 'string') return false;
+      if (/^stream disconnected before completion: Transport error: network error: /i.test(message)) return true;
+      if (message === 'stream disconnected before completion: Our servers are currently busy. Please try again in a moment.') return true;
+    }
     return ['serverOverloaded', 'internalServerError', 'flexUnavailable', ...(allowRateLimit ? ['rateLimitExceeded'] : [])].includes(code);
   }
   if (!code || typeof code !== 'object') return false;

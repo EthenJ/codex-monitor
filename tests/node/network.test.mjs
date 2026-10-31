@@ -37,6 +37,11 @@ async function fixture(t) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write('event: response.created\ndata: {"type":"response.created","response":{"id":"cut","status":"in_progress","output":[]}}\n\n');
       setTimeout(() => res.destroy(), 30);
+    } else if (state.mode === 'busy') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const event = { type: 'response.failed', response: { id: 'busy', status: 'failed', output: [],
+        error: { code: 'server_error', message: 'Our servers are currently busy. Please try again in a moment.' } } };
+      res.end(`event: response.failed\ndata: ${JSON.stringify(event)}\n\n`);
     } else if (state.mode === 'hang') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(': waiting\n\n');
     } else successfulStream(res);
@@ -86,4 +91,21 @@ test('manual interrupt of real waiting provider never triggers recovery', { skip
   await until(() => f.recovery.state.state === 'cancelled');
   f.state.mode = 'success'; await f.recovery.check();
   assert.equal(f.recovery.state.attempts, 0); assert.equal(f.recovery.state.enabled, false);
+});
+
+test('real provider busy stream error recovers despite Codex classifying it as other', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
+  const f = await fixture(t); f.state.mode = 'busy';
+  await f.bridge.rpc('turn/start', { threadId: f.threadId, input: [{ type: 'text', text: 'Fixture: answer once.' }] });
+  await until(() => ['backoff', 'not_retryable'].includes(f.recovery.state.state));
+  const failed = await latestTurn(f.bridge, f.threadId);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error.codexErrorInfo, 'other', JSON.stringify(failed.error));
+  assert.equal(failed.error.message, 'stream disconnected before completion: Our servers are currently busy. Please try again in a moment.');
+  await until(() => f.recovery.state.state === 'backoff');
+  assert.equal(f.recovery.state.attempts, 0);
+  f.state.mode = 'success';
+  await until(() => f.recovery.state.last_submission_at);
+  await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
+  assert.equal(f.recovery.state.attempts, 1);
+  assert.ok(f.state.requests.some(r => r.body.includes('session_recovery')));
 });
