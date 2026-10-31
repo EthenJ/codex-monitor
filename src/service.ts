@@ -15,7 +15,7 @@ export async function rpc(directory: string, method: string, params: Json = {}, 
     headers: { Authorization: `Bearer ${endpoint.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ method, params }), signal: AbortSignal.timeout(timeout) });
   const result = await response.json() as Json;
-  if (!response.ok || result.error) throw Error(result.error || 'Local monitor request failed');
+  if (!response.ok || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {});
   return result.result;
 }
 async function lock(directory: string, operation: () => Promise<void>) {
@@ -122,7 +122,7 @@ export async function serve(directory: string, threadId?: string) {
         }
       }
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ result }));
-    } catch (e) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ error: bounded(e) })); }
+    } catch (e) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ error: bounded(e), ...((e as any).report ? { validation: (e as any).report } : {}) })); }
     finally { requests--; }
   });
   server.requestTimeout = 60000; server.headersTimeout = 5000;

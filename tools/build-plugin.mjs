@@ -8,7 +8,7 @@ const destination = path.resolve(process.argv[2] || path.join(root, 'dist', `cod
 if (existsSync(destination)) throw Error('Choose a new destination; existing files are never removed');
 if (!existsSync(path.join(root, 'codex-monitor/runtime/server.js'))) throw Error('Run npm run build first');
 await mkdir(destination, { recursive: true });
-for (const relative of ['README.md', 'LICENSE', '.mcp.json', '.codex-plugin/plugin.json', '.agents/plugins/marketplace.json', 'codex-monitor/SKILL.md', 'codex-monitor/agents/openai.yaml']) {
+for (const relative of ['README.md', 'LICENSE', '.mcp.json', '.codex-plugin/plugin.json', '.agents/plugins/marketplace.json', 'hooks/hooks.json', 'codex-monitor/SKILL.md', 'codex-monitor/agents/openai.yaml']) {
   await mkdir(path.dirname(path.join(destination, relative)), { recursive: true });
   await cp(path.join(root, relative), path.join(destination, relative));
 }

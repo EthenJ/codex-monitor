@@ -4,6 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci && npm install -g @openai/codex@0.166.0
 COPY tsconfig.json ./
 COPY src ./src
+COPY hooks ./hooks
 COPY tests/node ./tests/node
 RUN npm run build
 ENV CODEX_MONITOR_TEST_NATIVE=1

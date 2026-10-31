@@ -26,6 +26,8 @@ export function validateOptions(kind: string, raw: Json, stateDirectory: string)
   if (o.warmup_ms >= o.timeout_ms) throw Error('warmup_ms must be shorter than timeout_ms');
   if (kind === 'command') { text(o.command, 'command', 16000); text(o.match, 'match', 1000); new RegExp(o.match); new TextDecoder(o.encoding || 'utf-8'); return o; }
   if (o.watch_file && o.watch_directory) throw Error('Choose watch_file or watch_directory');
+  if (o.gpu_recover_above !== undefined && o.gpu_util_below === undefined) throw Error('gpu_recover_above requires gpu_util_below');
+  if (o.report_recovery && !o.stalled_for_ms && o.gpu_util_below === undefined) throw Error('report_recovery requires a file inactivity or GPU threshold');
   for (const key of ['watch_file', 'watch_directory']) if (o[key]) o[key] = path.resolve(o.cwd, text(o[key], key, 4096));
   if (o.watch_directory && within(stateDirectory, o.watch_directory)) throw Error('State must be outside the watched directory');
   if (o.stalled_for_ms !== undefined) { integer(o.stalled_for_ms, 'stalled_for_ms', 1, 604800000); if (!o.watch_file && !o.watch_directory) throw Error('Inactivity requires a file source'); }

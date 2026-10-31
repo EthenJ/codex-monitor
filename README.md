@@ -2,7 +2,7 @@
 
 A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
 
-Version **0.2.1** builds on the v0.2 Node plugin with fixed-interval recovery and optional coverage of unlisted failures. The published `v0.2` tag retains package 0.2.0; earlier v0.2/v0.3 development-preview labels were not public releases.
+Version **0.2.2** adds typed MCP configuration, preflight validation and structured status reports at turn end. Fixed-interval recovery and optional coverage of unlisted failures from 0.2.1 are preserved.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
@@ -19,7 +19,7 @@ codex plugin marketplace add .
 codex plugin add codex-monitor@codex-monitor
 ```
 
-Restart Codex to load the seven tools. Disable older standalone copies of the skill to avoid duplicate guidance. Bootstrap starts a hidden launcher outside the MCP client's process job; run it once per login/reboot from an external terminal. It installs no OS service or scheduled task.
+Restart Codex to load the nine tools. Disable older standalone copies of the skill to avoid duplicate guidance. Review the status-report hooks in `/hooks` to enable automatic stop/interrupt reports. Bootstrap starts a hidden launcher outside the MCP client's process job; run it once per login/reboot from an external terminal. It installs no OS service or scheduled task.
 
 When using the source checkout on `develop`, run `npm ci` and `npm run build` before bootstrap and installation instead. The Node plugin has no Python runtime dependency. Native bindings use Koffi's published prebuilt binaries where available.
 
@@ -37,7 +37,11 @@ When upgrading from v0.1, stop its old observers and disable/remove the standalo
 4. Codex reads evidence and uses `monitor_ack` to acknowledge handled event IDs. Pending results already handled independently are suppressed.
 5. With authorization, the native goal pauses while waiting and resumes after event submission and state verification.
 
-Tools: `monitor_start`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
+Tools: `monitor_start`, `monitor_validate`, `monitor_report`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
+
+MCP clients discover parameter types, ranges and enums through `tools/list`. `monitor_start` infers command/watchdog mode and applies finite defaults. Commands without `match` report exit only. Start automatically checks configuration and local prerequisites. Use `monitor_validate` to preview normalized settings and verify the exact loaded host thread without starting a workload or recovery. See [minimal examples and validation](codex-monitor/references/plugin.md#typed-configuration-and-preflight).
+
+`monitor_report` returns a compact structured tool result. Bundled `Stop` and `Interrupt` hooks automatically emit the same report through the host's hook status message, without waking the model. Review and trust the installed hooks in `/hooks`; installation alone does not trust hooks. Client rendering varies, and `codex exec --json` may omit hook messages. No new turn is submitted merely to show status.
 
 Commands are owned and cleaned up on cancellation. Watchdogs never terminate existing training PIDs. File/GPU rules support startup grace, dwell times, aggregation and recovery hysteresis. Native file notifications and local GPU/PID sampling do not wake the model. Read [usage and lifecycle contracts](codex-monitor/references/plugin.md).
 
@@ -53,7 +57,7 @@ Source, tests and build tooling live on the `develop` branch. Run these commands
 
 ```text
 npm test
-npm run package -- dist/codex-monitor-v0.2.1
+npm run package -- dist/codex-monitor-v0.2.2
 ```
 
 Deployment packages include compiled JavaScript, production dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, development dependencies, reports, caches and local state are excluded. Deployment pull requests target `main`; development stays on `develop`. The v0.1 tag remains available for the standalone release.

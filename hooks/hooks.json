@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/codex-monitor/runtime/stop-report.js\"", "timeout": 3, "statusMessage": "Reporting monitor status" }] }],
+    "Interrupt": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/codex-monitor/runtime/stop-report.js\"", "timeout": 3, "statusMessage": "Reporting monitor status" }] }]
+  }
+}

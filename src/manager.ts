@@ -1,12 +1,12 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { atomicJson, bounded, id, integer, Json, now, readJson, serial, text, threadKey, VERSION, within } from './common.js';
+import { atomicJson, bounded, id, integer, Json, now, readJson, serial, text, threadKey, VERSION } from './common.js';
 import { Bridge, BridgeLike, getGoal, loaded, sameGoal, submit } from './bridge.js';
-import { Sensor, startSensor, validateOptions } from './sensors.js';
+import { Sensor, startSensor } from './sensors.js';
+import { validateRequest, ValidationFailure } from './validation.js';
 import { Recovery } from './recovery.js';
 
-const DEFAULT_EVENTS = ['command_output', 'file_change', 'command_exit', 'process_exit', 'watchdog_stalled', 'monitor_error', 'monitor_expired'];
 const PENDING = new Set(['pending', 'sending', 'unknown']);
 export class Manager {
   records: Record<string, Json> = {}; events: Record<string, Json> = {}; wait: Json | null = null;
@@ -75,13 +75,10 @@ export class Manager {
     }
   }
   async start(params: Json) {
-    const name = text(params.name, 'name', 100), instructions = text(params.instructions, 'instructions');
-    const options = validateOptions(params.kind, params.options, this.directory);
-    if (options.watch_directory && within(realpathSync(this.directory), realpathSync(options.watch_directory))) throw Error('State must be outside watched tree');
-    if (options.watch_file && within(path.join(realpathSync(path.dirname(options.watch_file)), path.basename(options.watch_file)), realpathSync(this.directory))) throw Error('Cannot watch monitor state files');
-    const selected = params.notify_on || DEFAULT_EVENTS;
-    if (!Array.isArray(selected) || !selected.length || selected.some(e => ![...DEFAULT_EVENTS, 'watchdog_recovered'].includes(e))) throw Error('Invalid notification types');
-    const ttl = integer(params.event_ttl_ms ?? 3600000, 'event_ttl_ms', 1000, 604800000);
+    const validation = await validateRequest(this.threadId, this.directory, { operation: 'start', config: params }, false);
+    if (!validation.valid) throw new ValidationFailure(validation);
+    params = validation.normalized;
+    const { name, instructions, options, notify_on: selected, event_ttl_ms: ttl } = params;
     const canonical = (obj: any): any => Array.isArray(obj) ? obj.map(canonical) : obj && typeof obj === 'object' ? Object.fromEntries(Object.keys(obj).sort().map(k => [k, canonical(obj[k])])) : obj;
     const fingerprint = createHash('sha256').update(JSON.stringify(canonical([params.kind, options, instructions, [...selected].sort(), ttl]))).digest('hex');
     return this.operations(async () => {

@@ -23,6 +23,8 @@ Run bootstrap from an external terminal once per login/reboot. Its hidden launch
 | Tool | Purpose |
 | --- | --- |
 | `monitor_start` | Register an observer; return readiness and deadline |
+| `monitor_validate` | Read-only preflight, normalized settings and structured checks |
+| `monitor_report` | Compact structured status without creating a service |
 | `monitor_status` | Monitors, delivery, wait and recovery; select a monitor for full evidence |
 | `monitor_stop` | Stop observation, preserving a watched PID |
 | `monitor_wait` | Record dependency and optionally pause goal with authorization |
@@ -31,6 +33,37 @@ Run bootstrap from an external terminal once per login/reboot. Its hidden launch
 | `monitor_recovery` | Configure bounded recovery after transient session errors |
 
 Every tool requires the exact caller thread UUID. Per-thread state lives under `~/.codex/monitor-node` or `CODEX_MONITOR_HOME`, outside watched trees. The private local HTTP endpoint uses a random bearer token. Observers survive MCP disconnects. Services exit after one idle minute once observations, delivery, waits and recovery settle.
+
+## Typed configuration and preflight
+
+The existing `monitor_start` shape remains compatible, but `options` now advertises command/watchdog schemas in MCP `tools/list`: types, ranges, enums, descriptions and rejection of misspelled fields. `kind` is optional and inferred. A command without `match` observes exit only:
+
+```json
+{"thread_id":"<current UUID>","name":"tests","options":{"cwd":"C:/project","command":"npm test"},"instructions":"Inspect the test result and continue."}
+```
+
+For a file use `options: {"cwd":"C:/project","watch_file":"runs/metrics.json"}`; add `stalled_for_ms` for inactivity. The 30-minute default is finite; longer training needs an explicit lifetime. No shell command is executed by validation:
+
+```json
+{
+  "thread_id":"<current UUID>",
+  "request":{"operation":"start","config":{"name":"training","options":{"cwd":"C:/project","watch_file":"runs/metrics.json","stalled_for_ms":300000,"timeout_ms":86400000},"instructions":"Inspect suspected stalls."}}
+}
+```
+
+Pass this to `monitor_validate`. Use `operation: "recovery"` with a recovery config to check authorization, timing and the current goal without enabling it. Result fields are `valid`, `normalized`, `checks`, `errors` (code/path/message), `warnings` and `checked_at`. Input schema/type errors use the standard MCP error response; semantic/environment failures return `isError: true` with structured evidence. Recovery previews omit authorization text; supply the original authorization when enabling.
+
+Validation checks source combinations, ranges, regex/encoding, filesystem access, state-directory aliases, existing PIDs and an optional bounded `nvidia-smi` query. Host verification defaults on and only reads the exact loaded thread/goal; it does not resume or start a turn. `check_host: false` explicitly skips it. Missing watched files are supported when their parent exists. Commands are never executed to test them, so command existence/success is unverified. A custom `nvidia_smi` executable is run for a metrics query only when explicitly supplied. Observers are not armed by validation and a successful snapshot does not guarantee later readiness.
+
+Start automatically repeats schema and local prerequisite checks before recording/arming a monitor. No monitor/event is created on a preflight failure. The service validates too, so bypassing MCP does not bypass these checks. Host verification is separate from registration: an observer can run even when callback delivery is unavailable.
+
+## Automatic status reports
+
+`monitor_report(thread_id)` returns a genuine MCP tool result with `type: monitor_report`, timestamps, summary counts, monitor deadlines, pending events, wait and recovery policy, and stop actions. It never creates a service, observer or model turn. If the service is unreachable, saved state is explicitly `verified: false`; historical `armed`/`enabled` fields are not proof of live supervision. Output omits raw evidence, commands and authorization text, and bounds histories with omitted counts.
+
+The plugin includes synchronous `Stop` and `Interrupt` command hooks. They use the hook event's exact `session_id`, perform a bounded read, and emit JSON in `systemMessage` containing `{tool: "monitor_report", hook, turn_id, result}`. They never return a continuation/block decision or submit a callback, so reports cannot create an agent wake loop or override manual interruption. They do not cancel workloads or recovery; interruption handling remains the supervisor's responsibility.
+
+Review and trust these hooks in Codex `/hooks` after installing/upgrading. Trust is required by Codex for the current hook definition, not granted automatically by this plugin. The host renders hook status messages; they are not synthetic MCP calls. `monitor_report` is the direct tool-call display path. `codex exec --json` can omit hook messages even when hooks execute, and host shutdown cannot guarantee a final report. See [official hook behavior and trust](https://learn.chatgpt.com/docs/hooks).
 
 ## Training example
 

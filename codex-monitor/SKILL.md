@@ -13,7 +13,9 @@ Use the plugin's MCP tools. They register independent Node.js observers; events 
 
 Obtain the exact caller `CODEX_THREAD_ID` from this conversation's execution environment once. Pass it to every tool; never infer the caller from a shared MCP process, choose the latest thread or create a replacement session.
 
-Call `monitor_start` with a stable name, absolute workload `options.cwd`, finite `timeout_ms`, relevant trigger and authorized next action in `instructions`. Confirm `state: armed` before reporting success. Equivalent live registrations reuse the monitor. Preserve its ID for status and cancellation.
+Call `monitor_start` with a stable name, absolute workload `options.cwd`, relevant trigger and authorized next action in `instructions`. Use the MCP schema instead of constructing shell wrappers around the plugin. `kind` is inferred from `options.command`; omit `match` to observe command exit only. The default finite lifetime is 30 minutes; set `timeout_ms` explicitly for longer workloads. Confirm `state: armed` before reporting success. Equivalent live registrations reuse the monitor. Preserve its ID for status and cancellation.
+
+For uncertain configuration or host connectivity, call `monitor_validate` with `request: {operation: start|recovery, config: ...}`. Inspect its structured errors, warnings and effective defaults; fix invalid values rather than guessing. It does not start commands, observers or recovery. Start repeats local checks because a validation snapshot can become stale. `check_host: false` leaves callback availability unverified.
 
 Prefer event callbacks over agent-side `sleep`, repeated log/status polling and repeated tool waits spent only checking readiness. After registration, continue independent work. If none remains, check status once, explain what is pending and yield. Runtime sensor sampling, bounded transport retries and ordinary short synchronous commands remain appropriate; Git pull is unrelated.
 
@@ -51,6 +53,8 @@ A recovery event means continue the existing task, not replay the last shell com
 
 ## Before every final response, pause or handoff
 
-Take one bounded `monitor_status` snapshot for this task. Report active workloads, relevant events, delivery failures, deadlines and stop methods. Include pending goal waits and enabled recovery policy/retry state. If none remains active, say so. Do not stop required monitors merely because the turn ends.
+Call `monitor_report` once before ending, yielding or handing off so the user receives a structured MCP tool result with active workloads, events, deadlines, stop actions and wait/recovery state. Use `monitor_status` with a monitor ID only when full evidence needs inspection. If the report's source is saved/unavailable, do not describe historical states as verified running. Do not fabricate a tool call in prose when the tool is unavailable; state that limitation.
+
+Trusted plugin `Stop` and `Interrupt` hooks also emit a report automatically through the host event stream after stopping. This is informational: never start a continuation just to report status, block a user's stop, or enable/rearm recovery from a reporting hook. The host controls presentation; hooks are not available until reviewed/trusted, and some clients omit their status messages. Keep a concise final status sentence if needed, but do not duplicate the entire JSON report in prose. Leave required monitors and authorized recovery running across turns.
 
 If tools are unavailable, explain that the plugin is not loaded and follow the installation reference. The repository retains Python standalone helpers for compatibility, but the Node plugin does not depend on Python or silently fall back to chat-message callbacks.

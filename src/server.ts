@@ -1,22 +1,47 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import path from 'node:path';
 import { ensureService, rpc } from './service.js';
-import { Json, VERSION } from './common.js';
+import { Json, VERSION, bounded, stateRoot, threadKey } from './common.js';
+import { monitorSchema, recoverySchema, validationSchema, validationOutput } from './contracts.js';
+import { validateRequest } from './validation.js';
+import { readReport, reportSchema } from './report.js';
 const server = new McpServer({ name: 'codex-monitor', version: VERSION }, { instructions:
-  'Register finite workload observers and continue independent work. Events arrive as native monitor_event tool outputs. Inspect status and acknowledge handled event IDs; stale or acknowledged events must not repeat work. Monitor long tests and training. Check status once before final responses. Goal pause/resume and session retry require applicable user authorization.' });
+  'Register finite workload observers and continue independent work. Events arrive as native monitor_event tool outputs. Inspect status and acknowledge handled event IDs; stale or acknowledged events must not repeat work. Monitor long tests and training. Call monitor_report once before final responses or yielding; never wake a model solely for reporting. Use monitor_validate for uncertain configuration. Goal pause/resume and session retry require applicable user authorization.' });
 const thread = z.string().uuid().describe('Exact current caller CODEX_THREAD_ID, never the MCP server environment.');
 async function call(threadId: string, method: string, params: Json) {
-  const result = await rpc(await ensureService(threadId), method, params, 60000);
-  return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result };
+  try {
+    const result = await rpc(await ensureService(threadId), method, params, 60000);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result,
+      ...(result.state === 'failed' ? { isError: true } : {}) };
+  } catch (e) {
+    const result = { ok: false, error: { code: 'MONITOR_REQUEST_FAILED', message: bounded(e) },
+      ...((e as any).report ? { validation: (e as any).report } : {}) };
+    return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result };
+  }
 }
-server.registerTool('monitor_start', { description: 'Arm a finite command or watchdog and return readiness. Watchdog observes existing training without killing it. Routine progress stays local with watchdog_only. Commands are owned and stopped on cancel/deadline.', inputSchema: {
-  thread_id: thread, name: z.string(), kind: z.enum(['command', 'watchdog']), options: z.record(z.string(), z.unknown()).describe('Absolute cwd; command/match or watch_file/watch_directory/pid/GPU and health options. Explicit timeout_ms.'),
-  instructions: z.string(), notify_on: z.array(z.string()).optional(), event_ttl_ms: z.number().int().optional(),
-} }, ({ thread_id, ...params }) => call(thread_id, 'start', params));
+server.registerTool('monitor_start', { description: 'Validate configuration and local prerequisites, then arm a finite command or watchdog. kind is inferred; command match is optional (exit-only). Routine progress stays local with watchdog_only. Commands are owned and stopped on cancel/deadline. Host callback availability is separate; use monitor_validate for a read-only host check.',
+  inputSchema: monitorSchema.extend({ thread_id: thread }),
+}, ({ thread_id, ...params }) => call(thread_id, 'start', params));
+server.registerTool('monitor_validate', { description: 'Preflight a monitor_start or monitor_recovery configuration without starting workloads, observers, recovery or model turns. Returns normalized defaults, checks, errors and warnings. Checks files, existing PIDs, optional NVIDIA query, and the exact loaded host thread by default. A pass is a snapshot, not guaranteed future readiness.',
+  inputSchema: validationSchema.extend({ thread_id: thread }), outputSchema: validationOutput,
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+}, async ({ thread_id, request, check_host }) => {
+  const result = await validateRequest(thread_id, path.join(stateRoot(), threadKey(thread_id)), request, check_host ?? true);
+  return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result,
+    ...(!result.valid ? { isError: true } : {}) };
+});
 server.registerTool('monitor_status', { description: 'One bounded snapshot of monitors, event delivery, wait and recovery. Pass monitor_id for full evidence. Submitted is not acknowledged. Report status before ending a turn.', inputSchema: {
   thread_id: thread, monitor_id: z.string().uuid().optional(),
 } }, ({ thread_id, ...params }) => call(thread_id, 'status', params));
+server.registerTool('monitor_report', { description: 'Display a compact structured monitor status report before yielding or on request. Includes events, deadlines, wait/recovery policy and stop actions. Reads existing state without starting a service or model turn; saved state is explicitly unverified. Stop/Interrupt hooks use the same report after the turn.',
+  inputSchema: { thread_id: thread }, outputSchema: reportSchema,
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+}, async ({ thread_id }) => {
+  const result = await readReport(thread_id);
+  return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result };
+});
 server.registerTool('monitor_stop', { description: 'Stop observation; preserve an observed PID. An owned command is terminated with its descendants. Cancel dependent wait without resuming goal.', inputSchema: {
   thread_id: thread, monitor_id: z.string().uuid(),
 } }, ({ thread_id, ...params }) => call(thread_id, 'stop', params));
@@ -27,14 +52,7 @@ server.registerTool('monitor_cancel_wait', { description: 'Cancel wait, mute sel
 server.registerTool('monitor_ack', { description: 'Acknowledge specific events after inspecting and reconciling their evidence. State a resolution, including already handled or superseded. Prevent pending stale wakeups; never claim unfinished work completed.', inputSchema: {
   thread_id: thread, event_ids: z.array(z.string().uuid()), resolution: z.string(),
 } }, ({ thread_id, ...params }) => call(thread_id, 'ack', params));
-server.registerTool('monitor_recovery', { description: 'Configure bounded recovery after verified failed Codex turns. Requires explicit user authorization. retry_mode defaults to transient; all_failed includes unknown, authentication and other failures without an allowlist, but never overrides manual interruption, paused goals, budget/usage/policy stops or uncertain submissions. Local timers do not invoke the model. Disabling cancels pending retries.', inputSchema: {
-  thread_id: thread, enabled: z.boolean(), authorization: z.string().optional(),
-  max_attempts: z.number().int().optional().describe('Optional earlier attempt cap; default ceil(max_elapsed_ms / retry_interval_ms), 36 with default timing.'),
-  retry_mode: z.enum(['transient', 'all_failed']).optional().describe('Use all_failed only when the user requests broader failed-turn retries; it also includes rate-limit errors regardless of retry_rate_limits.'),
-  retry_interval_ms: z.number().int().optional().describe('Fixed delay after each eligible failure. Default 300000 (300 seconds).'),
-  max_elapsed_ms: z.number().int().optional().describe('Maximum elapsed time per failure incident. Default 10800000 (3 hours).'),
-  base_delay_ms: z.number().int().optional().describe('Deprecated alias for retry_interval_ms.'),
-  max_delay_ms: z.number().int().optional().describe('Legacy validation only; no exponential backoff. Must be at least the fixed interval.'),
-  lifetime_ms: z.number().int().optional(), check_interval_ms: z.number().int().optional(), retry_rate_limits: z.boolean().optional(),
-} }, ({ thread_id, ...params }) => call(thread_id, 'recovery', params));
+server.registerTool('monitor_recovery', { description: 'Configure bounded recovery after verified failed Codex turns. Requires explicit user authorization. Defaults: fixed 300 seconds, 3-hour incident limit, 24-hour lifetime. all_failed includes unlisted errors but preserves manual interruption, paused goals, host limits and uncertain submissions. Disable to cancel pending retries.',
+  inputSchema: recoverySchema.extend({ thread_id: thread }),
+}, ({ thread_id, ...params }) => call(thread_id, 'recovery', params));
 await server.connect(new StdioServerTransport());

@@ -1,5 +1,6 @@
 import { BridgeLike, getGoal, latestTurn, loaded, sameGoal, submit, RpcError } from './bridge.js';
-import { Json, bounded, id, integer, now, text } from './common.js';
+import { Json, bounded, id, now } from './common.js';
+import { recoveryPolicy } from './contracts.js';
 
 export type RetryMode = 'transient' | 'all_failed';
 export function retryable(error: Json | null, allowRateLimit = false, mode: RetryMode = 'transient'): boolean {
@@ -38,27 +39,9 @@ export class Recovery {
     if (restored) this.state = { ...restored, enabled: false, state: 'interrupted', reason: 'Service restarted; explicit re-enable required', next_retry_at: null };
   }
   async configure(config: Json) {
+    const parsed = recoveryPolicy(config);
     if (!config.enabled) { this.epoch++; clearTimeout(this.timer); this.state = { ...this.state, enabled: false, state: 'disabled', next_retry_at: null }; this.save(); return this.snapshot(); }
-    const authorization = text(config.authorization, 'Explicit authorization to retry this session');
-    const retryMode = config.retry_mode ?? 'transient';
-    if (!['transient', 'all_failed'].includes(retryMode)) throw Error('retry_mode must be transient or all_failed');
-    const interval = integer(config.retry_interval_ms ?? config.base_delay_ms ?? 300000, 'retry_interval_ms', 1000, 3600000);
-    const elapsed = integer(config.max_elapsed_ms ?? 10800000, 'max_elapsed_ms', 1000, 86400000);
-    // Accept v0.2 callers, but every attempt now uses the same interval.
-    if (config.base_delay_ms != null) {
-      integer(config.base_delay_ms, 'base_delay_ms', 1000, 3600000);
-      if (config.base_delay_ms !== interval) throw Error('base_delay_ms conflicts with retry_interval_ms');
-    }
-    if (config.max_delay_ms != null && integer(config.max_delay_ms, 'max_delay_ms', 1000, 3600000) < interval) throw Error('max_delay_ms must be >= retry_interval_ms');
-    const policy = {
-      retry_mode: retryMode as RetryMode,
-      max_attempts: integer(config.max_attempts ?? Math.ceil(elapsed / interval), 'max_attempts', 1, 86400),
-      retry_interval_ms: interval,
-      max_elapsed_ms: elapsed,
-      lifetime_ms: integer(config.lifetime_ms ?? 86400000, 'lifetime_ms', 1000, 604800000),
-      check_interval_ms: integer(config.check_interval_ms ?? 30000, 'check_interval_ms', 1000, 300000),
-      retry_rate_limits: config.retry_rate_limits === true,
-    };
+    const authorization = parsed.config.authorization!, policy = parsed.policy!;
     const epoch = ++this.epoch; clearTimeout(this.timer);
     this.state = { ...this.state, enabled: false, state: 'configuring', next_retry_at: null }; this.save();
     const bridge = await this.connect(); await loaded(bridge, this.threadId);
