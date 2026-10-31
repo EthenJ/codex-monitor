@@ -61,11 +61,15 @@ Every tool requires the exact caller thread UUID. Per-thread state lives under `
 
 File options: `watch_file` or `watch_directory`, `recursive`, `pattern`, `file_backend` (`auto`, `native`, `polling`), `poll_ms`, `stalled_for_ms`. Paths resolve against absolute `cwd`. Chokidar uses native events by default; polling is explicit. Parent subscriptions handle atomic replacement and initially missing files. Root replacement or permission errors are failures. File symlinks require the target path; recursive traversal does not follow directory symlinks.
 
+`cwd` must be a directory; an existing `watch_file` must be a regular file. Every observed file write resets inactivity even if its notification is debounced. Deletion and directory churn do not establish progress.
+
 GPU options: `gpu_id` (indices, UUIDs, PCI IDs, or `all`), `gpu_match` (`all`/`any`), `gpu_util_below`, `gpu_recover_above`, `gpu_below_for_ms`, `gpu_sample_ms`, `nvidia_smi`. Invalid/missing samples are unknown, never zero; they reset dwell evidence. In `any` mode the same card must remain low. `dead_if` combines file/GPU rules. Recovery events require `report_recovery: true` and `watchdog_recovered` in `notify_on`.
 
 PID identity uses a Windows handle, Linux `/proc` start time, or macOS process start-time checks. POSIX checks are local, not model turns. A watchdog never signals the observed PID. macOS unrelated-process exit codes are unavailable and start-time resolution limits PID-reuse detection.
 
 Commands use `kind: command`, `command`, `match` (JavaScript regex), optional `encoding`, `debounce_ms`, `max_events`, `timeout_ms` (maximum 30 minutes). They run through the platform shell. Lines are bounded to 16,000 characters. A Node guardian owns the tree; Windows kill-on-close jobs cover forced guardian termination. POSIX graceful cancellation cleans groups; SIGKILL cannot execute userspace cleanup. Watchdogs can run seven days; expiry notifies once and ends observation.
+
+Command debounce suppresses only consecutive identical matching lines within its interval; different matches still produce sensor events. Pending notifications may subsequently be superseded by newer evidence or command exit; inspect event history when reconciling results.
 
 ## Native delivery and acknowledgement
 

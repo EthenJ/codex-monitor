@@ -1,5 +1,7 @@
 # Windows 验证结果与复测清单
 
+> 本文是旧 Python 实现的历史记录。当前 Node v0.3 在 `develop` 开发，请使用 [Node Windows 复测清单](node-windows-validation.md)；下文历史 `main`、Python 命令与测试数量不适用于新版插件。
+
 ## 2026-10-31 实测结果
 
 已拉取 Ubuntu 提交 `6983e66`，在原生 Windows 11 Pro for Workstations 26H2（10.0.26300、x64）、PowerShell 7.6.9 上执行本轮验证，Codex CLI 为 0.166.0。本轮只修改测试、CI 和文档，运行时代码保留该 Ubuntu 提交。

@@ -13,4 +13,4 @@ RUN npm run build && chown -R 1000:1000 /work
 USER 1000:1000
 ENV CODEX_MONITOR_TEST_NATIVE=1
 # Run with --init --network none. Include real Linux process and file tests.
-CMD ["node", "--test", "--test-timeout=25000", "tests/node/integration.test.mjs", "tests/node/runtime.test.mjs", "tests/node/network.test.mjs"]
+CMD ["node", "--test", "--test-timeout=25000", "tests/node/*.test.mjs"]

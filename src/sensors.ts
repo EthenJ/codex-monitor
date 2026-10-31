@@ -73,14 +73,14 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
   const fail = (e: unknown) => { if (!stopped) { send({ event_type: 'monitor_error', error: bounded(e) }); void stop('monitor_error'); } };
   const startup = (async (): Promise<Json> => {
     try {
-      await stat(o.cwd);
+      if (!(await stat(o.cwd)).isDirectory()) throw Error('cwd must be a directory');
       if (stopped) throw Error('Monitor cancelled during registration');
       if (kind === 'command') {
         const regex = new RegExp(o.match);
         command = await owned(o.command, [], { cwd: o.cwd, shell: true });
         command.process.stdin!.end();
         if (stopped) { await command.stop(); throw Error('Monitor cancelled during registration'); }
-        let last = -Infinity;
+        let last = -Infinity, lastValue: string | undefined;
         for (const stream of [command.process.stdout!, command.process.stderr!]) {
           const decoder = new TextDecoder(o.encoding || 'utf-8');
           let line = '';
@@ -94,7 +94,9 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
           const check = (value: string) => {
             if (value.length > 16000) { fail(Error('Command output line exceeds 16000 characters')); return; }
             const at = performance.now();
-            if (regex.test(value) && at - last >= o.debounce_ms) { last = at; send({ event_type: 'command_output', event: value }); }
+            if (regex.test(value) && (value !== lastValue || at - last >= o.debounce_ms)) {
+              last = at; lastValue = value; send({ event_type: 'command_output', event: value });
+            }
           };
           stream.on('data', chunk => consume(decoder.decode(chunk, { stream: true })));
           stream.on('end', () => consume(decoder.decode(), true));
@@ -109,9 +111,15 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
         const rootAlias = o.watch_file ? path.dirname(target) : target;
         const root = await realpath(rootAlias), original = await stat(root, { bigint: true });
         if (!original.isDirectory()) throw Error('Watch root must be a directory');
+        const verifyFile = async () => {
+          try {
+            const entry = await lstat(target);
+            if (entry.isSymbolicLink()) throw Error('Watch the symlink target explicitly');
+            if (!entry.isFile()) throw Error('watch_file must be a regular file');
+          } catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+        };
         if (o.watch_file) {
-          try { if ((await lstat(target)).isSymbolicLink()) throw Error('Watch the symlink target explicitly'); }
-          catch (e: any) { if (e.code !== 'ENOENT') throw e; }
+          await verifyFile();
         }
         if (stopped) throw Error('Monitor cancelled during registration');
         // Parent subscription handles a file absent at registration and atomic replacement.
@@ -129,13 +137,14 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
           const relative = path.relative(rootAlias, alias);
           if (o.pattern && !path.matchesGlob(relative, o.pattern) && !path.matchesGlob(path.basename(alias), o.pattern)) return;
           const at = performance.now();
+          // Every observed write is progress, even when its notification is
+          // debounced. Deletion and directory churn do not prove progress.
+          if (change === 'add' || change === 'change') health.progress(at);
           if (['add', 'change', 'addDir'].includes(change)) {
             if (at - (last.get(alias) ?? -Infinity) < o.debounce_ms) return;
             last.set(alias, at);
           } else last.delete(alias);
           if (last.size > 4096) last.delete(last.keys().next().value!);
-          // Deletion and directory churn do not prove training progress.
-          if (change === 'add' || change === 'change') health.progress(at);
           if (!o.watchdog_only) send({ event_type: 'file_change', change: ({ add: 'created', change: 'modified', unlink: 'deleted', addDir: 'created', unlinkDir: 'deleted' } as Json)[change], path: alias });
         });
         if (stopped) throw Error('Monitor cancelled during registration');
@@ -152,10 +161,7 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
           try {
             const current = await stat(rootAlias, { bigint: true });
             if (current.dev !== original.dev || current.ino !== original.ino) throw Error('Watched root was replaced or renamed');
-            if (o.watch_file) {
-              try { if ((await lstat(target)).isSymbolicLink()) throw Error('Watch the symlink target explicitly'); }
-              catch (e: any) { if (e.code !== 'ENOENT') throw e; }
-            }
+            if (o.watch_file) await verifyFile();
           } catch (e) { fail(e); } finally { checking = false; }
         }, 250);
         addCleanup(() => clearInterval(verify));

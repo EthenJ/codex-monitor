@@ -92,9 +92,15 @@ export async function serve(directory: string, threadId?: string) {
         response.writeHead(403).end(); return;
       }
       if (closing) throw Error('Service shutting down');
-      let body = '';
-      for await (const chunk of request) { body += chunk.toString(); if (Buffer.byteLength(body) > 65536) throw Error('Request too large'); }
-      const { method, params = {} } = JSON.parse(body);
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const chunk of request) {
+        size += chunk.length;
+        if (size > 65536) throw Error('Request too large');
+        chunks.push(chunk);
+      }
+      // HTTP chunks may split a UTF-8 code point. Decode only after collecting
+      // the bounded byte stream so names, paths and instructions stay intact.
+      const { method, params = {} } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       let result;
       if (!manager) {
         if (method === 'status') result = { version: VERSION, state: 'ready', service_pid: process.pid };

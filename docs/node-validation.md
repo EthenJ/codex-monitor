@@ -2,6 +2,59 @@
 
 Validation date: 2026-11-01. This preview is developed on `develop`. Deployment `main` and the published v0.1 release are unchanged. The [Python v0.2 report](plugin-validation.md) is historical and does not establish Node compatibility.
 
+## Local Docker and native GPU delivery follow-up
+
+Docker was installed on the Ubuntu host for this follow-up: Engine/client 29.1.3, Buildx 0.30.1, containerd 2.2.1, cgroup v2 and overlayfs. The working tree is still based on `develop` commit `7be4880`, with the fixes and new tests described here. Both images built and ran successfully via `tools/validate-docker.sh`:
+
+| Container | Result |
+| --- | --- |
+| Dedicated native network fixture, `node:24-bookworm-slim` | **3 passed, zero failures/skips**, about 3.09 seconds |
+| Full Ubuntu 24.04 image, UID/GID 1000, Node 24.22.2, Codex 0.166.0 | **69 tests: 66 passed, three expected skips, zero failures**, about 14.37 seconds |
+
+The three Ubuntu skips were two Windows Job Object tests and the opt-in physical GPU test. All new boundary and executable GPU-provider tests ran. The Ubuntu Dockerfile previously listed only the original three test files; its entrypoint now discovers `tests/node/*.test.mjs` so added regressions are included. Host tests with real GPUs enabled separately passed 67 of 69 cases on both Node 22.22.0 and 24.17.0.
+
+Both test containers used `--init --network none --cpus 2 --memory 3g --pids-limit 512`, with no host workload mounts or GPU passthrough. Package/image downloads occurred during builds; test providers used only container loopback. Test containers were removed. Images remain for reuse: `codex-monitor-network-test:local-20261031185345-486924` (`00a390e5f00b7`) and `codex-monitor-ubuntu-test:local-20261031185345-486924` (`e0812d8b2cc5`). Local logs, full image IDs/configuration, runtime versions and source hashes are retained under ignored `.tmp-docker-gpu-8lmkyaay/`.
+
+A watchdog registered directly with the local plugin service also observed a real diagnostic GPU threshold crossing (100%/99%, approximately 306 ms below the configured 100% threshold) and recovery. Both `watchdog_stalled` and `watchdog_recovered` arrived in the original conversation as native tool outputs, were inspected and explicitly acknowledged. The observer stopped at its two-event limit. This verifies the GPU event-to-conversation path, while actual 0–10% idle-to-loaded transitions and real driver outages remain untested on hardware. No existing training process was stopped or modified.
+
+## Additional GPU pipeline coverage
+
+The subsequent local follow-up adds three POSIX GPU-provider tests. The complete suite now has **69 tests**; on Ubuntu with native Codex and physical GPU tests enabled, Node 22.22.0 and 24.17.0 each passed **67 tests with two Windows-only skips**. The previous 66-test totals below describe the earlier working tree.
+
+The new executable provider fixture exercises the actual subprocess and parser pipeline: low/mid/high utilization, persistent `N/A`, no false recovery across unknown samples, rearming, malformed/duplicate/missing devices, nonzero driver exit, and cancellation/deadline cleanup of a hung query. All three tests passed. Windows skips these POSIX fixtures explicitly.
+
+`tools/probe-gpu-transitions.mjs` additionally observed a real threshold-and-recovery cycle on the two busy RTX 4090 D cards without signalling any existing workload. The reusable probe collected 27 samples and completed in about 7.76 seconds with a 100% diagnostic threshold; it saw a sustained 99% sample and subsequent recovery to 100%. Separate checks verified expiry without a cycle returns an inconclusive result and invalid parameters fail. This establishes a real sampling/event transition, not actual idle-to-loaded training recovery. See [GPU validation](gpu-validation.md) for reproduction and limits.
+
+## Ubuntu physical-host follow-up
+
+Tested the working tree based on `develop` commit `7be4880`, including the fixes below, on Ubuntu 24.04 as a regular user. Environment: Linux 7.0.0-38-generic, Node 24.17.0 and 22.22.0, npm 11.17.0, Codex 0.166.0, two NVIDIA RTX 4090 D cards with driver 610.57.04. The initial unchanged baseline passed 48 of 50 tests, with two Windows-only skips.
+
+Four reproduced issues were corrected, with regressions that failed before the fixes:
+
+- HTTP chunks could split a UTF-8 character and corrupt Chinese monitor names, paths or instructions. The service now decodes the complete, byte-bounded request. Tests also cover authentication, malformed JSON and the exact 65,536-byte limit with multibyte input.
+- Command debounce suppressed distinct consecutive matching lines. Only identical consecutive matches are now suppressed within the interval.
+- Native and polling file debounce also suppressed training-progress updates. Every observed write now resets inactivity; only notifications are debounced. Deletion and directory churn still do not reset progress.
+- A file used as `cwd`, or a directory used as `watch_file`, could be reported as armed. Registration now rejects both; periodic verification also rejects replacement of a file with a directory.
+
+Final checks:
+
+| Check | Result |
+| --- | --- |
+| Strict TypeScript build on Node 22.22.0 and 24.17.0 | Passed |
+| Full Node suite, native Codex and physical GPU enabled, on each Node version | **66 tests: 64 passed, two Windows Job Object skips, zero failures** |
+| Real local App Server, HTTP 503, broken response stream, manual interruption | Passed using isolated Codex homes and a synthetic loopback provider |
+| Native/polling recursion, filename filtering, ignored initial files; 12 concurrent observer registrations | Passed |
+| Owned command output limit, timeout, cancellation and failed startup | Passed |
+| GPU warmup, exact dwell, hysteresis, unknown samples, file/card `all`/`any`, malformed/missing CSV | Passed deterministic tests |
+| Missing GPU executable | One unknown-sensor error, no false stall, finite expiry |
+| Production-only package in a separate temporary directory | Lock-file install/audit passed; seven MCP tools discovered; Chinese paths, arm/reconnect/status/stop passed; sources/tests/Python/development dependencies excluded |
+| Legacy Python compatibility suite (Python 3.13) | **115 tests: 106 passed, nine platform/opt-in skips** |
+| Skill manifest and whitespace checks | Passed |
+
+Physical GPU tests queried both cards using index, UUID, PCI bus ID and combined selections, and rejected a nonexistent UUID. The finite observer collected multiple successful samples and expired with no false stall, recovery or sensor-error events. Utilization was approximately 99–100%; the test used a zero-percent low threshold to verify quiet monitoring without changing existing workloads. No training process was started, stopped or signalled. At this stage sustained-low/recovery transitions were covered only by deterministic fixtures; the subsequent follow-up above adds real diagnostic threshold crossings. Enable the quiet read-only test with `CODEX_MONITOR_TEST_GPU=1`; optionally set `CODEX_MONITOR_NVIDIA_SMI` to the executable path.
+
+The initial physical-host review did not run Windows/macOS or Docker (Docker was absent then), and did not install into the user's active Codex configuration. The subsequent Docker and native GPU delivery results are recorded above. Earlier CI/Windows/container evidence below applies to the recorded earlier revisions, not these new fixes. Use the [Node Windows checklist](node-windows-validation.md) to validate this working tree on Windows. Task test observers and services were stopped after validation.
+
 ## Local Windows results
 
 Environment: Windows build 26300, Node.js 24.22.0, npm 11.19.1, Codex CLI/daemon 0.166.0. No Codex source build or user model credentials were used in isolated tests.
@@ -72,7 +125,7 @@ The legacy replacement/deletion fixture accepts equal timestamps within older Wi
 
 The Windows launcher now avoids requesting a second job breakaway when an external broker starts an observer. A new Windows test reproduces an enclosing job that denies breakaway; observer startup succeeds through the broker locally and in hosted Windows CI. Direct MCP startup still requires breakaway or an external bootstrap. See Microsoft's [nested job rules](https://learn.microsoft.com/windows/win32/procthread/nested-jobs). A flaky legacy polling test was also changed to synchronize replacement/deletion with watcher readiness and observed progress instead of racing a short inactivity deadline.
 
-Live NVIDIA hardware, real distributed training, production provider outages and other Codex versions have not been validated for this Node implementation. Standard Node matrix jobs skip native Codex tests when the CLI is unavailable; the dedicated container supplies the pinned CLI for real network fault coverage.
+The physical-host follow-ups above add NVIDIA query, quiet-monitoring and diagnostic threshold/recovery coverage. Actual idle-to-loaded training transitions, distributed training, production provider outages and other Codex versions remain unvalidated. Standard Node matrix jobs skip native Codex tests when the CLI is unavailable and skip the opt-in GPU test; the dedicated container supplies the pinned CLI for real network fault coverage.
 
 ## Limits
 

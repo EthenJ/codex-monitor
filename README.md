@@ -53,6 +53,10 @@ Deployment packages include compiled JavaScript, dependency manifests, plugin me
 
 Enable isolated native App Server tests with `CODEX_MONITOR_TEST_NATIVE=1`. They use temporary Codex homes and a local synthetic model endpoint, never user credentials or paid models. Network fixtures inject HTTP failures, broken streams and manual interruption.
 
+Enable read-only NVIDIA hardware tests with `CODEX_MONITOR_TEST_GPU=1` on a host with working `nvidia-smi`. These check GPU selectors and finite quiet monitoring without changing workloads; deterministic tests cover threshold and recovery transitions.
+
+For a real read-only transition probe and repeatable GPU-provider fault tests, see [GPU validation](https://github.com/EthenJ/codex-monitor/blob/develop/docs/gpu-validation.md). Run `bash tools/validate-docker.sh` to build both container fixtures and save their test logs.
+
 ```text
 docker build -f tests/container/Dockerfile -t codex-monitor-network-test .
 docker run --rm --network none codex-monitor-network-test
@@ -61,6 +65,8 @@ docker run --rm --network none codex-monitor-network-test
 Image building downloads dependencies; test execution uses only container loopback. Exact coverage is recorded in [Node validation](https://github.com/EthenJ/codex-monitor/blob/develop/docs/node-validation.md). Prior Python platform/GPU results do not establish Node platform coverage.
 
 For Ubuntu installation, full container checks and manual workload/goal/GPU cases, follow the [Ubuntu validation guide](https://github.com/EthenJ/codex-monitor/blob/develop/docs/ubuntu-validation.md).
+
+For native Windows regression commands and the pending platform/GPU checks, use the [Node Windows checklist](https://github.com/EthenJ/codex-monitor/blob/develop/docs/node-windows-validation.md).
 
 ## Boundaries
 
