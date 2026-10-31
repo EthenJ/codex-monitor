@@ -25,6 +25,18 @@ Environment: Windows build 26300, Node.js 24.22.0, npm 11.19.1, Codex CLI/daemon
 
 Actual callbacks from the legacy regression and Docker/WSL installation attempts also arrived in the current Codex conversation as `codex_monitor.monitor_event` tool outputs. Their evidence was inspected and their IDs acknowledged. They were not injected as user chat messages.
 
+## Follow-up lifecycle review
+
+The review corrected these boundary cases and added regression coverage:
+
+- File deletion and directory churn no longer reset training inactivity. Startup grace begins after sensor registration is ready.
+- An accepted recovery submission cannot be duplicated while the host still reports the preceding failed turn.
+- Acknowledged or expired pending events and observers that end without a deliverable event settle dependent waits, leaving the goal unchanged. Muted observers cannot start another wait.
+- History cleanup preserves instructions for unresolved events and removes settled event references with their monitor records.
+- Invalid options and inherited-object IDs are rejected. Cancellation during registration and failed proxy connections clean up their watchers and owned processes.
+
+Final full Ubuntu 24.04 container validation passed **48 tests with two Windows-only skips and zero failures**, using UID 1000 and `--init --network none`. Windows passed all 50 tests. The rebuilt deployment package again installed successfully and exposed all seven tools plus the enabled skill. See the [Ubuntu validation guide](ubuntu-validation.md) for real-machine checks.
+
 ## Real native network faults
 
 `tests/node/network.test.mjs` starts a real, isolated Codex App Server against a local synthetic Responses endpoint. Provider retries are disabled in the fixture to expose terminal failures. The production supervisor still waits for Codex's own retries to finish.
@@ -47,12 +59,12 @@ The repository Dockerfile built successfully from commit `91c5b7f`, using `node:
 
 Running that image with `--rm --init --network none` passed **all three native network tests, zero failures and zero skips**, in approximately four seconds: HTTP 503 recovery, interrupted response-stream recovery, and no recovery after a manual turn interruption. The container used only loopback for its synthetic model endpoint. The test container was removed after completion; the image remains available for reuse. Completion reached the current Codex conversation through a native monitor tool result and was explicitly acknowledged.
 
-The final [development CI run for 1318741](https://github.com/EthenJ/codex-monitor/actions/runs/41226278410) completed with **all 18 jobs passing**:
+The final [development CI run for 52b18aa](https://github.com/EthenJ/codex-monitor/actions/runs/41229790267), including the follow-up lifecycle fixes, completed with **all 18 jobs passing**:
 
 | Coverage | Result |
 | --- | --- |
 | Node 22 and 24 on Windows, Ubuntu and macOS; compilation, regression and deployment packaging | All six jobs passed |
-| Native HTTP 503, broken stream and manual interruption inside Docker with `--network none` | All three cases passed |
+| Native HTTP 503, broken stream and manual interruption inside Docker with `--network none`; full Ubuntu 24.04 suite as UID 1000 | Three network cases passed; full suite passed 48 tests with two Windows-only skips |
 | Legacy Python 3.10, 3.12 and 3.14 on all three platforms | All nine jobs passed |
 | Legacy tests without optional platform dependencies on Windows and Ubuntu | Both jobs passed |
 
@@ -63,8 +75,6 @@ The Windows launcher now avoids requesting a second job breakaway when an extern
 Live NVIDIA hardware, real distributed training, production provider outages and other Codex versions have not been validated for this Node implementation. Standard Node matrix jobs skip native Codex tests when the CLI is unavailable; the dedicated container supplies the pinned CLI for real network fault coverage.
 
 ## Limits
-
-The follow-up review corrected deletion being counted as training progress, repeat recovery submissions while the host snapshot lags, unresolved waits after acknowledgement/expiry, history cleanup losing event instructions, invalid option/ID handling, and abandoned proxy/watcher cleanup. Each behavior has regression coverage. Final full Ubuntu 24.04 container validation passed **48 tests with two Windows-only skips and zero failures**, using UID 1000 and `--init --network none`. Windows passed all 50 tests. The rebuilt deployment package again installed successfully and exposed all seven tools plus the enabled skill. See the [Ubuntu validation guide](ubuntu-validation.md) for real-machine checks. The CI result above records the earlier baseline; the review changes require their own passing run.
 
 Native API acceptance is separate from eventual agent processing and explicit acknowledgement. There is no exactly-once guarantee, queued-result recall, atomic compare-and-start, or guaranteed immediate interruption of a running tool. POSIX SIGKILL cannot run userspace descendant cleanup. Recovery never infers failure from silence, resets a goal budget, or restarts training automatically.
 
