@@ -1,0 +1,16 @@
+FROM node:24-bookworm-slim AS node-runtime
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=node-runtime /usr/local /usr/local
+WORKDIR /work
+COPY package.json package-lock.json ./
+RUN npm ci && npm install -g @openai/codex@0.166.0
+COPY tsconfig.json ./
+COPY src ./src
+COPY tests/node ./tests/node
+RUN npm run build && chown -R 1000:1000 /work
+USER 1000:1000
+ENV CODEX_MONITOR_TEST_NATIVE=1
+# Run with --init --network none. Include real Linux process and file tests.
+CMD ["node", "--test", "--test-timeout=25000", "tests/node/integration.test.mjs", "tests/node/runtime.test.mjs", "tests/node/network.test.mjs"]

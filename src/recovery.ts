@@ -81,6 +81,11 @@ export class Recovery {
       if (this.state.incident_started_at && !sameGoal(this.state.goal, goal)) { this.halt('Goal changed during recovery; re-enable explicitly', 'cancelled'); return; }
       if (turn?.status === 'interrupted' && turn.id !== this.state.ignore_turn) { this.halt('Turn interrupted; user intent takes precedence', 'cancelled'); return; }
       if (meta.thread?.status?.type === 'active' || turn?.status === 'inProgress') { this.state.state = 'observing'; return; }
+      if (turn?.id === this.state.submitted_for_turn) {
+        // A successful write is not permission to submit it again while the
+        // host's latest-turn snapshot catches up. Only a new failure can retry.
+        this.state.state = 'awaiting_host'; this.state.next_retry_at = null; return;
+      }
       if (!turn || turn.id === this.state.ignore_turn || turn.status !== 'failed') {
         if (turn?.status === 'completed') { this.state.attempts = 0; this.state.incident_started_at = null; this.state.failed_turn = null; }
         this.state.state = 'observing'; this.state.next_retry_at = null; return;
@@ -110,7 +115,7 @@ export class Recovery {
           instruction: 'Resume the existing task after a transient host error. Reconcile completed tools and external effects before retrying work. Do not restart a training process merely because the conversation failed.' }, this.state.root_turn);
         if (epoch !== this.epoch || !this.state.enabled) return;
         this.currentRetry = result.turn?.id;
-        Object.assign(this.state, { state: 'submitted', submitted_turn: this.currentRetry, last_submission_at: now() });
+        Object.assign(this.state, { state: 'submitted', submitted_for_turn: turn.id, submitted_turn: this.currentRetry, last_submission_at: now() });
       } catch (e) {
         // A timeout may already have started a turn. Never repeat uncertain lifecycle writes.
         if (epoch === this.epoch) this.halt(bounded(e), e instanceof RpcError && e.uncertain ? 'unknown' : 'failed');

@@ -8,6 +8,7 @@ import { Health, parseGpu } from './health.js';
 import { Json, integer, text, within, bounded } from './common.js';
 
 export function validateOptions(kind: string, raw: Json, stateDirectory: string): Json {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('options must be an object');
   const shared = ['cwd', 'timeout_ms', 'max_events', 'debounce_ms'];
   const allowed = kind === 'command' ? [...shared, 'command', 'match', 'encoding'] :
     [...shared, 'watch_file', 'watch_directory', 'recursive', 'pattern', 'file_backend', 'poll_ms', 'stalled_for_ms', 'warmup_ms', 'pid', 'gpu_util_below', 'gpu_below_for_ms', 'gpu_recover_above', 'gpu_id', 'gpu_match', 'gpu_sample_ms', 'nvidia_smi', 'dead_if', 'watchdog_only', 'report_recovery'];
@@ -20,6 +21,8 @@ export function validateOptions(kind: string, raw: Json, stateDirectory: string)
   for (const key of ['max_events', 'debounce_ms', 'warmup_ms']) integer(o[key], key, 0, 604800000);
   for (const key of ['poll_ms', 'gpu_sample_ms', 'gpu_below_for_ms']) integer(o[key], key, 10, 604800000);
   for (const key of ['recursive', 'watchdog_only', 'report_recovery']) if (o[key] !== undefined && typeof o[key] !== 'boolean') throw Error(`${key} must be boolean`);
+  for (const key of ['pattern', 'nvidia_smi', 'encoding']) if (o[key] !== undefined) text(o[key], key, 4096);
+  if (o.warmup_ms >= o.timeout_ms) throw Error('warmup_ms must be shorter than timeout_ms');
   if (kind === 'command') { text(o.command, 'command', 16000); text(o.match, 'match', 1000); new RegExp(o.match); new TextDecoder(o.encoding || 'utf-8'); return o; }
   if (o.watch_file && o.watch_directory) throw Error('Choose watch_file or watch_directory');
   for (const key of ['watch_file', 'watch_directory']) if (o[key]) o[key] = path.resolve(o.cwd, text(o[key], key, 4096));
@@ -47,7 +50,8 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
   let watcher: FSWatcher | undefined, command: Owned | undefined;
   const cleaners: Array<() => void | Promise<void>> = [];
   const addCleanup = (fn: () => void | Promise<void>) => { if (stopped) void Promise.resolve().then(fn).catch(() => {}); else cleaners.push(fn); };
-  const o = options, health = new Health(o, performance.now());
+  const o = options;
+  let health = new Health(o, performance.now());
   const deadline = setTimeout(() => { send({ event_type: 'monitor_expired' }); void stop('deadline'); }, o.timeout_ms);
   addCleanup(() => clearTimeout(deadline));
   const stop = (reason = 'cancelled'): Promise<void> => {
@@ -70,6 +74,7 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
   const startup = (async (): Promise<Json> => {
     try {
       await stat(o.cwd);
+      if (stopped) throw Error('Monitor cancelled during registration');
       if (kind === 'command') {
         const regex = new RegExp(o.match);
         command = await owned(o.command, [], { cwd: o.cwd, shell: true });
@@ -108,11 +113,14 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
           try { if ((await lstat(target)).isSymbolicLink()) throw Error('Watch the symlink target explicitly'); }
           catch (e: any) { if (e.code !== 'ENOENT') throw e; }
         }
+        if (stopped) throw Error('Monitor cancelled during registration');
         // Parent subscription handles a file absent at registration and atomic replacement.
         const last = new Map<string, number>();
         watcher = chokidar.watch(root, { ignoreInitial: true, followSymlinks: false, atomic: false,
           depth: o.watch_file || !o.recursive ? 0 : undefined, backend: o.file_backend,
           pollingInterval: o.poll_ms, ignorePermissionErrors: false });
+        const registered = watcher;
+        addCleanup(() => registered.close());
         watcher.on('error', fail);
         watcher.on('all', (change, observed) => {
           if (!ready || stopped) return;
@@ -126,14 +134,18 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
             last.set(alias, at);
           } else last.delete(alias);
           if (last.size > 4096) last.delete(last.keys().next().value!);
-          health.progress(at);
+          // Deletion and directory churn do not prove training progress.
+          if (change === 'add' || change === 'change') health.progress(at);
           if (!o.watchdog_only) send({ event_type: 'file_change', change: ({ add: 'created', change: 'modified', unlink: 'deleted', addDir: 'created', unlinkDir: 'deleted' } as Json)[change], path: alias });
         });
+        if (stopped) throw Error('Monitor cancelled during registration');
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(() => reject(Error('File watcher startup timed out')), 10000);
+          addCleanup(() => { clearTimeout(timeout); reject(Error('File watcher registration cancelled')); });
           watcher!.once('ready', () => { clearTimeout(timeout); resolve(); });
           watcher!.once('error', e => { clearTimeout(timeout); reject(e); });
         });
+        if (stopped) throw Error('Monitor cancelled during registration');
         let checking = false;
         const verify = setInterval(async () => {
           if (checking || stopped) return; checking = true;
@@ -177,6 +189,9 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
           addCleanup(() => clearInterval(timer));
         }
       }
+      if (stopped) throw Error('Monitor cancelled during registration');
+      // Dwell/grace time begins only after file/PID registration is ready.
+      health = new Health(o, performance.now());
       if (o.gpu_util_below != null) {
         const cancel = new AbortController();
         let inFlight: Promise<void> | undefined;

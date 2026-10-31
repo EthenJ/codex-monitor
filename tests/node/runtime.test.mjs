@@ -10,6 +10,7 @@ import { Recovery, retryable } from '../../codex-monitor/runtime/recovery.js';
 import { Health, parseGpu } from '../../codex-monitor/runtime/health.js';
 import { owned, capture } from '../../codex-monitor/runtime/processes.js';
 import { sameGoal, RpcError } from '../../codex-monitor/runtime/bridge.js';
+import { startSensor, validateOptions } from '../../codex-monitor/runtime/sensors.js';
 
 class Host extends EventEmitter {
   goal = { threadId: 't', createdAt: 1, updatedAt: 1, objective: 'Train', status: 'active', tokenBudget: 10000, tokensUsed: 1, timeUsedSeconds: 1 };
@@ -287,4 +288,93 @@ test('GPU identity changes reset dwell even when device index is reused', () => 
 test('a state-file watch is rejected to prevent feedback from status writes', async t => {
   const { manager, start, root } = await fixture(t);
   await assert.rejects(start({ watch_file: path.join(root, 'state', 'state.json') }), /state files/);
+});
+
+test('deletion is observable but never resets training progress', async t => {
+  const { manager, work, start } = await fixture(t), progress = [];
+  const original = Health.prototype.progress;
+  Health.prototype.progress = function(at) { progress.push(at); return original.call(this, at); };
+  t.after(() => { Health.prototype.progress = original; });
+  const file = path.join(work, 'metrics'); await writeFile(file, 'one');
+  const r = await start({ debounce_ms: 0 });
+  const replacement = path.join(work, 'new'); await writeFile(replacement, 'two'); await rename(replacement, file);
+  await eventually(() => progress.length > 0);
+  const count = progress.length; await rm(file);
+  await eventually(() => Object.values(manager.events).some(e => e.evidence?.change === 'deleted'));
+  assert.equal(progress.length, count); await manager.stop(r.id);
+});
+
+test('invalid pattern and executable options fail before a watcher is armed', () => {
+  for (const extra of [{ pattern: 1 }, { nvidia_smi: {} }, { warmup_ms: 10000 }]) {
+    assert.throws(() => validateOptions('watchdog', { cwd: process.cwd(), watch_file: 'metrics', timeout_ms: 10000, ...extra }, path.join(process.cwd(),'state')));
+  }
+});
+
+test('accepted retry is not duplicated while latest-turn state lags', async t => {
+  const { recovery, host } = await recoveryFixture(t);
+  const failed = structuredClone(host.turn);
+  recovery.state.next_retry_at = 0; await recovery.check();
+  host.turn = failed;
+  await recovery.check(); await recovery.check();
+  assert.equal(host.submissions.length, 1); assert.equal(recovery.state.state, 'awaiting_host');
+  host.turn = { ...failed, id: recovery.state.submitted_turn };
+  await recovery.check(); assert.equal(recovery.state.state, 'backoff');
+});
+
+test('acknowledgement during goal verification settles the wait', async t => {
+  const { manager, host, start } = await fixture(t), r = await start();
+  await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect', goal_authorization: 'Pause and resume' });
+  manager.event(r.id, { event_type: 'process_exit' });
+  const rpc = host.rpc.bind(host);
+  host.rpc = async (method, params) => {
+    if (method === 'thread/goal/get') await manager.acknowledge({ event_ids: Object.keys(manager.events), resolution: 'Handled independently' });
+    return rpc(method, params);
+  };
+  await manager.flush();
+  assert.equal(manager.wait.state, 'interrupted'); assert.equal(host.goal.status, 'paused'); assert.equal(host.submissions.length, 0);
+});
+
+test('expired wake and notification-free observer completion settle waits', async t => {
+  const f = await fixture(t), r = await f.start();
+  await f.manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect' });
+  f.manager.event(r.id, { event_type: 'process_exit' }); Object.values(f.manager.events)[0].expires_at = 0;
+  f.manager.expire(); assert.equal(f.manager.wait.state, 'interrupted');
+  const other = await fixture(t), monitor = await other.start();
+  await other.manager.beginWait({ monitor_ids: [monitor.id], resume_instructions: 'Inspect' });
+  await other.manager.jobs.get(monitor.id).stop('deadline'); other.manager.expire();
+  assert.equal(other.manager.wait.state, 'failed');
+});
+
+test('muted monitors cannot create another wait', async t => {
+  const { manager, start } = await fixture(t), r = await start();
+  await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect' }); await manager.cancelWait();
+  assert.equal((await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect' })).state, 'ready');
+});
+
+test('history collection retains instructions for unacknowledged submitted events', async t => {
+  const { manager, start } = await fixture(t);
+  for (let i = 0; i < 100; i++) {
+    const key = randomUUID(); manager.records[key] = { id: key, state: 'stopped', name: 'old-'+i, instructions: 'Retain evidence' };
+    manager.events[key] = { id: key, monitor_id: key, state: 'submitted', expires_at: Date.now()+60000 };
+  }
+  await assert.rejects(start(), /history busy/);
+  for (const key of Object.keys(manager.events)) assert.equal(manager.snapshot(key).monitors[0].instructions, 'Retain evidence');
+});
+
+test('unknown inherited object keys cannot be used as monitor or event IDs', async t => {
+  const { manager } = await fixture(t);
+  for (const key of ['__proto__', 'constructor', 'toString']) {
+    assert.throws(() => manager.snapshot(key), /Unknown monitor/);
+    await assert.rejects(manager.stop(key), /Unknown monitor/);
+    await assert.rejects(manager.acknowledge({ event_ids: [key], resolution: 'Invalid input' }), /Unknown event/);
+  }
+  assert.equal(Object.prototype.muted, undefined);
+});
+
+test('cancellation during sensor registration does not leave a live watcher', async t => {
+  const { work } = await fixture(t), outcomes = [];
+  const sensor = startSensor('watchdog', validateOptions('watchdog', { cwd: work, watch_file: 'metrics', timeout_ms: 10000 }, path.join(work,'state')), () => {}, x => outcomes.push(x));
+  const rejected = assert.rejects(sensor.ready, /cancelled|stopped/);
+  await sensor.stop(); await rejected;
+  assert.equal(outcomes.length, 1); assert.equal(outcomes[0].reason, 'cancelled');
 });

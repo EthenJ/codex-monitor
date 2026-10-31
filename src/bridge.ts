@@ -34,12 +34,15 @@ export class Bridge extends EventEmitter implements BridgeLike {
   private process?: Owned;
   private sendRaw?: (message: string) => void;
   private closed = false;
+  private disposing?: Promise<void>;
   static async connect(options: Json = {}): Promise<Bridge> {
     const client = new Bridge();
     try {
       client.process = await owned(options.command || codexExecutable(),
         options.args || ['app-server', 'proxy'], { env: options.env || process.env });
       const child = client.process.process;
+      child.stdin!.on('error', () => client.fail('Codex proxy input failed'));
+      child.stdout!.on('error', () => client.fail('Codex proxy output failed'));
       child.stderr!.resume();
       void client.process.done.then(() => client.fail('Codex proxy disconnected'));
       if (options.jsonl) {
@@ -62,6 +65,7 @@ export class Bridge extends EventEmitter implements BridgeLike {
     } catch (e) { await client.close(); throw e; }
   }
   private receive(text: string) {
+    if (this.closed) return;
     let message: Json;
     try { message = JSON.parse(text); } catch { this.fail('Invalid Codex JSON-RPC response'); return; }
     if (message.method && message.id !== undefined) {
@@ -78,7 +82,13 @@ export class Bridge extends EventEmitter implements BridgeLike {
     if (this.closed) return;
     this.closed = true;
     for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(new RpcError(reason, true)); }
-    this.pending.clear(); this.emit('disconnected', reason);
+    this.pending.clear();
+    void this.dispose();
+    this.emit('disconnected', reason);
+  }
+  private dispose() {
+    if (!this.disposing) this.disposing = (async () => { this.wire?.terminate(); await this.process?.stop(); })();
+    return this.disposing;
   }
   rpc(method: string, params: Json): Promise<any> {
     if (this.closed || !this.sendRaw) return Promise.reject(new RpcError('Codex connection unavailable'));
@@ -90,7 +100,7 @@ export class Bridge extends EventEmitter implements BridgeLike {
       catch (e) { clearTimeout(timer); this.pending.delete(id); reject(new RpcError(String(e), true)); }
     });
   }
-  async close() { this.fail('Connection closed'); this.wire?.terminate(); await this.process?.stop(); }
+  async close() { this.fail('Connection closed'); await this.dispose(); }
 }
 export async function loaded(bridge: BridgeLike, threadId: string) {
   const result = await bridge.rpc('thread/loaded/list', {});

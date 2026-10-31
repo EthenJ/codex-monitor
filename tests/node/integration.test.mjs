@@ -108,3 +108,13 @@ test('external Windows broker launches observers without a second job breakaway'
     await launcher.stop(); await rm(root, { recursive: true, force: true });
   }
 });
+
+test('malformed proxy output stops the abandoned transport process', { timeout: 10000 }, async () => {
+  const script = `require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.method==='break'){console.log('invalid-json');return;}if(m.id)console.log(JSON.stringify({id:m.id,result:{pid:process.pid}}));});setInterval(()=>{},1000);`;
+  const bridge = await Bridge.connect({ command: process.execPath, args: ['-e', script], jsonl: true });
+  try {
+    const { pid } = await bridge.rpc('pid', {});
+    await assert.rejects(bridge.rpc('break', {}), /Invalid Codex JSON/);
+    await eventually(() => { try { process.kill(pid, 0); return false; } catch (e) { return e.code === 'ESRCH'; } });
+  } finally { await bridge.close(); }
+});

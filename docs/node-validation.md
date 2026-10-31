@@ -7,7 +7,7 @@ Validation date: 2026-11-01. This preview is developed on `develop`. Deployment 
 Environment: Windows build 26300, Node.js 24.22.0, npm 11.19.1, Codex CLI/daemon 0.166.0. No Codex source build or user model credentials were used in isolated tests.
 
 - TypeScript strict compilation passed.
-- **40 Node tests passed, zero skipped** with `CODEX_MONITOR_TEST_NATIVE=1`.
+- **50 Node tests passed, zero skipped** with `CODEX_MONITOR_TEST_NATIVE=1` after the follow-up review.
 - Legacy Python compatibility suite: **115 tests, 97 passed and 18 platform/hardware skips**. Python is not a dependency of the Node plugin.
 - Both skill validators passed. Production dependency audit reported zero known vulnerabilities after updating Zod to 4.6.7.
 - Built a deployment package, installed production dependencies from its lock file, and installed it with the real `codex plugin marketplace add` / `codex plugin add` commands in an isolated Codex home. Codex reported version 0.3.0 and discovered the enabled `codex-monitor:codex-monitor` skill. The installed server exposed all seven tools and successfully armed/stopped an observer.
@@ -63,6 +63,8 @@ The Windows launcher now avoids requesting a second job breakaway when an extern
 Live NVIDIA hardware, real distributed training, production provider outages and other Codex versions have not been validated for this Node implementation. Standard Node matrix jobs skip native Codex tests when the CLI is unavailable; the dedicated container supplies the pinned CLI for real network fault coverage.
 
 ## Limits
+
+The follow-up review corrected deletion being counted as training progress, repeat recovery submissions while the host snapshot lags, unresolved waits after acknowledgement/expiry, history cleanup losing event instructions, invalid option/ID handling, and abandoned proxy/watcher cleanup. Each behavior has regression coverage. Final full Ubuntu 24.04 container validation passed **48 tests with two Windows-only skips and zero failures**, using UID 1000 and `--init --network none`. Windows passed all 50 tests. The rebuilt deployment package again installed successfully and exposed all seven tools plus the enabled skill. See the [Ubuntu validation guide](ubuntu-validation.md) for real-machine checks. The CI result above records the earlier baseline; the review changes require their own passing run.
 
 Native API acceptance is separate from eventual agent processing and explicit acknowledgement. There is no exactly-once guarantee, queued-result recall, atomic compare-and-start, or guaranteed immediate interruption of a running tool. POSIX SIGKILL cannot run userspace descendant cleanup. Recovery never infers failure from silence, resets a goal budget, or restarts training automatically.
 

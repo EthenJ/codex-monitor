@@ -72,3 +72,7 @@ jobs:
         run: docker build -f tests/container/Dockerfile -t codex-monitor-network-test .
       - name: Test with external networking disabled
         run: docker run --rm --network none codex-monitor-network-test
+      - name: Build full Ubuntu 24.04 validation
+        run: docker build -f tests/container/Dockerfile.ubuntu -t codex-monitor-ubuntu-test .
+      - name: Run full native suite as a regular Ubuntu user
+        run: docker run --rm --init --network none codex-monitor-ubuntu-test

@@ -85,6 +85,8 @@ Original goal viewing/editing/status remain in Codex. The plugin preserves objec
 
 Later user edits, cancellation, exhausted budget, lost connection or ambiguous mutation stop restoration. Final accounting from the pausing turn may increase. The API lacks atomic compare-and-set; a user action racing the final verification remains a limitation.
 
+If a pending wake is acknowledged or expires, the wait becomes `interrupted` and leaves the goal unchanged. If every selected observer ends without a deliverable event, it becomes `failed`. Muted observers cannot create another wait; inspect their state and explicitly register a new observer when needed. These cases require reconciliation rather than an automatic goal resume.
+
 ## Session recovery
 
 Recovery requires separate user authorization:
@@ -109,5 +111,7 @@ These defaults allow five attempts with 15/30/60/120/240-second delays. Timers r
 Before retry, re-read latest turn, runtime status and goal. Interrupted turns, paused/ended goals, exhausted budget and new active work prevent recovery. Manual interruption disables the supervisor until re-enabled. Plugin waits suspend recovery. Silent long tools are not interrupted. Recovery continues the task after reconciling completed effects; it does not replay commands or restart training.
 
 Daemon loss causes local reconnect checks until the finite supervisor deadline. No model action happens before verification. Ambiguous submission disables retries as `unknown`. Restart disables recovery and marks existing observation/wait interrupted; reconfigure explicitly. Host APIs have no atomic compare-and-start, so concurrent user actions remain a race boundary.
+
+After an accepted retry, a stale latest-turn snapshot does not cause another submission for the same failed turn. `awaiting_host` means the supervisor is waiting locally for the submitted turn to appear. Only a distinct eligible failure can consume another retry attempt.
 
 Official references: [native tool-result turns](https://learn.chatgpt.com/docs/app-server#start-a-turn), [plugin packaging](https://developers.openai.com/plugins/build/plugins), [MCP Events hosts](https://developers.openai.com/plugins/build/mcp-events).

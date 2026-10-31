@@ -60,6 +60,8 @@ docker run --rm --network none codex-monitor-network-test
 
 Image building downloads dependencies; test execution uses only container loopback. Exact coverage is recorded in [Node validation](https://github.com/EthenJ/codex-monitor/blob/develop/docs/node-validation.md). Prior Python platform/GPU results do not establish Node platform coverage.
 
+For Ubuntu installation, full container checks and manual workload/goal/GPU cases, follow the [Ubuntu validation guide](https://github.com/EthenJ/codex-monitor/blob/develop/docs/ubuntu-validation.md).
+
 ## Boundaries
 
 - Native events remain tool outputs; presentation and scheduling are controlled by Codex. Immediate tool preemption is not promised.

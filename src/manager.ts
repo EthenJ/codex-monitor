@@ -30,7 +30,7 @@ export class Manager {
   save() { atomicJson(path.join(this.directory, 'state.json'), { version: VERSION, thread_id: this.threadId, sequence: this.sequence, monitors: this.records, events: this.events, wait: this.wait, recovery: this.recovery?.state }); }
   snapshot(monitorId?: string) {
     this.lastUsed = now();
-    if (monitorId && !this.records[monitorId]) throw Error('Unknown monitor ID');
+    if (monitorId && !Object.hasOwn(this.records, monitorId)) throw Error('Unknown monitor ID');
     const records = monitorId ? [this.records[monitorId]] : Object.values(this.records);
     return structuredClone({ version: VERSION, thread_id: this.threadId, checked_at: now(), service_pid: process.pid,
       monitors: records.map(r => monitorId ? r : { id: r.id, name: r.name, kind: r.kind, state: r.state, deadline: r.deadline, backend: r.backend,
@@ -55,6 +55,7 @@ export class Manager {
         // Join the already-loaded thread for lifecycle notifications. No model,
         // settings, goal, history or replacement thread is supplied.
         await bridge.rpc('thread/resume', { threadId: this.threadId, excludeTurns: true });
+        if (this.closed) throw Error('Service closed while connecting');
       } catch (e) { await bridge.close(); throw e; }
       this.bridge = bridge;
       return bridge;
@@ -92,7 +93,10 @@ export class Manager {
       if (this.jobs.size >= 32) throw Error('At most 32 active monitors per thread');
       for (const key of Object.keys(this.records)) {
         if (Object.keys(this.records).length < 100) break;
-        if (!this.jobs.has(key) && !Object.values(this.events).some(e => e.monitor_id === key && PENDING.has(e.state))) delete this.records[key];
+        if (!this.jobs.has(key) && !Object.values(this.events).some(e => e.monitor_id === key && ['pending', 'sending', 'submitted', 'unknown', 'failed'].includes(e.state))) {
+          delete this.records[key];
+          for (const [eventId, event] of Object.entries(this.events)) if (event.monitor_id === key) delete this.events[eventId];
+        }
       }
       if (Object.keys(this.records).length >= 100) throw Error('Monitor history busy; reconcile pending events');
       const previous = Object.values(this.records).filter(r => r.name === name);
@@ -133,14 +137,24 @@ export class Manager {
   private requestFlush() { if (!this.flushTimer && !this.closed) this.flushTimer = setTimeout(() => { this.flushTimer = undefined; void this.flush(); }, 250); }
   expire(persist = true) {
     let changed = false;
-    for (const event of Object.values(this.events)) if (['pending', 'submitted'].includes(event.state) && event.expires_at <= now()) { event.state = 'expired'; changed = true; }
+    for (const event of Object.values(this.events)) if (['pending', 'submitted'].includes(event.state) && event.expires_at <= now()) {
+      if (event.state === 'pending') this.settleWaitFor(event.monitor_id, 'Selected event expired before delivery');
+      event.state = 'expired'; changed = true;
+    }
+    if (this.wait?.state === 'waiting' && this.wait.monitor_ids.every((key: string) => !this.jobs.has(key)) &&
+      !Object.values(this.events).some(e => this.wait!.monitor_ids.includes(e.monitor_id) && ['pending', 'sending'].includes(e.state))) {
+      this.wait.state = 'failed'; this.wait.error = 'Selected observers ended without a deliverable event; goal left unchanged'; changed = true;
+    }
     if (changed && persist) this.save();
   }
   async acknowledge(params: Json) {
     if (!Array.isArray(params.event_ids) || !params.event_ids.length) throw Error('Select event IDs to acknowledge');
     const resolution = text(params.resolution, 'resolution', 1000);
-    for (const key of params.event_ids) if (!this.events[key]) throw Error(`Unknown event ${key}`);
-    for (const key of params.event_ids) { Object.assign(this.events[key], { state: 'acknowledged', resolution, acknowledged_at: now() }); }
+    for (const key of params.event_ids) if (typeof key !== 'string' || !Object.hasOwn(this.events, key)) throw Error(`Unknown event ${key}`);
+    for (const key of params.event_ids) {
+      if (this.events[key].state === 'pending') this.settleWaitFor(this.events[key].monitor_id, 'Selected event handled before delivery; goal left unchanged');
+      Object.assign(this.events[key], { state: 'acknowledged', resolution, acknowledged_at: now() });
+    }
     this.save(); return { state: 'acknowledged', event_ids: params.event_ids };
   }
   async beginWait(params: Json) {
@@ -148,7 +162,7 @@ export class Manager {
       if (this.wait && ['preparing', 'waiting', 'waking'].includes(this.wait.state)) throw Error('A wait is already active');
       const ids: string[] = params.monitor_ids;
       if (!Array.isArray(ids) || !ids.length) throw Error('Select monitor IDs');
-      for (const key of ids) if (!this.records[key] || this.records[key].state !== 'armed' || Object.values(this.events).some(e => e.monitor_id === key && !['acknowledged', 'superseded', 'suppressed'].includes(e.state))) return { state: 'ready', reason: 'Inspect events before waiting' };
+      for (const key of ids) if (!Object.hasOwn(this.records, key) || this.records[key].muted || this.records[key].state !== 'armed' || Object.values(this.events).some(e => e.monitor_id === key && !['acknowledged', 'superseded', 'suppressed'].includes(e.state))) return { state: 'ready', reason: 'Inspect events and notification availability before waiting' };
       const waiting: Json = { id: id(), state: 'preparing', monitor_ids: [...new Set(ids)], instructions: text(params.resume_instructions, 'resume_instructions'), goal: null };
       this.wait = waiting;
       this.save();
@@ -181,8 +195,14 @@ export class Manager {
     }
     return { state: 'cancelled', goal: 'Left unchanged', notifications: 'Selected monitors muted' };
   }
+  private settleWaitFor(monitorId: string, reason: string) {
+    if (this.wait?.monitor_ids.includes(monitorId) && ['preparing', 'waiting', 'waking'].includes(this.wait.state)) {
+      this.wait.state = 'interrupted'; this.wait.error = reason;
+    }
+  }
   async stop(monitorId: string) {
-    const record = this.records[monitorId]; if (!record) throw Error('Unknown monitor');
+    if (!Object.hasOwn(this.records, monitorId)) throw Error('Unknown monitor');
+    const record = this.records[monitorId];
     if (this.wait?.monitor_ids.includes(monitorId) && ['waiting', 'waking', 'preparing'].includes(this.wait.state)) await this.cancelWait();
     record.muted = true;
     for (const event of Object.values(this.events)) if (event.monitor_id === monitorId && event.state === 'pending') event.state = 'suppressed';
@@ -209,9 +229,9 @@ export class Manager {
         for (const event of batch) event.state = 'suppressed'; this.save(); return;
       }
       if (waiting && waiting.state !== 'waiting') return;
-      if (waiting) waiting.state = 'waking';
       batch = batch.filter(e => e.state === 'pending' && !this.records[e.monitor_id]?.muted);
       if (!batch.length) return;
+      if (waiting) waiting.state = 'waking';
       for (const event of batch) event.state = 'sending';
       this.save();
       const result = await submit(bridge, this.threadId, { type: 'monitor_events', events: batch.map(e => ({

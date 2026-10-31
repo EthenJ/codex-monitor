@@ -9,3 +9,4 @@
 !tests/node/**
 !tests/container/
 !tests/container/Dockerfile
+!tests/container/Dockerfile.ubuntu
