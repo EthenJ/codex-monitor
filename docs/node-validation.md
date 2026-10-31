@@ -41,7 +41,11 @@ Codex 0.166.0 labels a truncated response body as `other`; recovery accepts only
 
 The container fixture installs Node dependencies and Codex 0.166.0 during image build. Execution uses `docker run --rm --network none`, so only loopback networking is available to the synthetic provider. A dedicated development CI job runs this fixture; the Node matrix also covers Windows, Ubuntu and macOS on Node 22 and 24. Configuration alone is not a passing result.
 
-Local Docker Desktop 4.97.0 was downloaded from Docker's official distribution and its SHA-256 verified. Installation was blocked because Windows `VirtualMachinePlatform` is disabled; the attempted WSL administrator launch returned “The operation was canceled by the user.” The user reported that no confirmation window appeared and will handle installation manually. Automated elevation did not complete, no reboot was performed, and no local container result is claimed.
+Local Windows Docker validation also passed after the user completed installation. The verified environment was Docker Desktop 4.97.0 (244584), Docker client/engine 29.9.2, context `desktop-linux`, Linux/amd64, and WSL kernel `6.18.54.1-microsoft-standard-WSL2`.
+
+The repository Dockerfile built successfully from commit `91c5b7f`, using `node:24-bookworm-slim` and Codex 0.166.0. Build time was approximately 93 seconds including downloads. The resulting image was `codex-monitor-network-test:local-v03`, ID `sha256:bebbfb7c42b24768f3f4f621e834d14ae251ad54e053f540ad4d2d9ff0e9d9a7`.
+
+Running that image with `--rm --init --network none` passed **all three native network tests, zero failures and zero skips**, in approximately four seconds: HTTP 503 recovery, interrupted response-stream recovery, and no recovery after a manual turn interruption. The container used only loopback for its synthetic model endpoint. The test container was removed after completion; the image remains available for reuse. Completion reached the current Codex conversation through a native monitor tool result and was explicitly acknowledged.
 
 The final [development CI run for 1318741](https://github.com/EthenJ/codex-monitor/actions/runs/41226278410) completed with **all 18 jobs passing**:
 
@@ -73,5 +77,5 @@ node --test --test-timeout=25000 tests/node/*.test.mjs
 
 ```text
 docker build -f tests/container/Dockerfile -t codex-monitor-network-test .
-docker run --rm --network none codex-monitor-network-test
+docker run --rm --init --network none codex-monitor-network-test
 ```
