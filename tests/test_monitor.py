@@ -246,42 +246,31 @@ class IntegrationTests(unittest.TestCase):
             root = Path(directory)
             path = root / "metrics.json"
             path.write_text("old")
-            armed, progress_seen = threading.Event(), threading.Event()
             progress_times, deleted_at = [], []
             start_watcher, note_progress = FileWatcher.start, HealthState.progress
             def start_when_ready(watcher):
                 result = start_watcher(watcher)
-                armed.set()
+                # Replace after the baseline snapshot, before health timing
+                # starts. A scheduled worker can lose a 300 ms race on CI.
+                temp = root / "temp.json"
+                temp.write_text("step=2")
+                os.replace(temp, path)
                 return result
             def record_progress(state, now):
                 note_progress(state, now)
                 progress_times.append(now)
-                progress_seen.set()
-            def replace_then_delete():
-                if not armed.wait(2):
-                    return
-                time.sleep(.12)
-                temp = root / "temp.json"
-                temp.write_text("step=2")
-                os.replace(temp, path)
-                if not progress_seen.wait(2):
-                    return
-                time.sleep(.1)
+                # Delete only after the replacement reached the health state;
+                # the following deletion must not reset its inactivity timer.
                 path.unlink()
                 deleted_at.append(time.monotonic())
-            worker = threading.Thread(target=replace_then_delete)
-            worker.start()
-            try:
-                # Test health transitions with an explicit short snapshot
-                # interval; native event delivery is covered by FileTests.
-                with patch.object(FileWatcher, "start", start_when_ready), \
-                     patch.object(HealthState, "progress", record_progress):
-                    code, records = self.run_monitor("--watch-file", str(path), "--stalled-for-ms", "300",
-                                                     "--file-backend", "polling", "--poll-ms", "20",
-                                                     "--watchdog-only", "--max-events", "1", "--timeout-ms", "3000")
-                finished = time.monotonic()
-            finally:
-                worker.join()
+            # Test health transitions with an explicit short snapshot
+            # interval; native event delivery is covered by FileTests.
+            with patch.object(FileWatcher, "start", start_when_ready), \
+                 patch.object(HealthState, "progress", record_progress):
+                code, records = self.run_monitor("--watch-file", str(path), "--stalled-for-ms", "300",
+                                                 "--file-backend", "polling", "--poll-ms", "20",
+                                                 "--watchdog-only", "--max-events", "1", "--timeout-ms", "3000")
+            finished = time.monotonic()
             self.assertEqual(code, 0)
             self.assertEqual(len(progress_times), 1, "replacement must count as progress; deletion must not")
             self.assertTrue(deleted_at, "the test must delete the replaced file")

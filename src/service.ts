@@ -36,10 +36,10 @@ async function lock(directory: string, operation: () => Promise<void>) {
   }
   try { await operation(); } finally { await rm(location, { recursive: true, force: true }); }
 }
-async function launch(directory: string, threadId?: string) {
+async function launch(directory: string, threadId?: string, breakaway = true) {
   const args = [fileURLToPath(new URL('./cli.js', import.meta.url)), threadId ? 'serve' : 'broker', directory, ...(threadId ? [threadId] : [])];
   let pid: number | undefined;
-  if (process.platform === 'win32') pid = launchWindowsDetached(process.execPath, args, process.cwd());
+  if (process.platform === 'win32') pid = launchWindowsDetached(process.execPath, args, process.cwd(), breakaway);
   else {
     const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
     await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
@@ -65,9 +65,14 @@ export async function ensureService(threadId: string, root = stateRoot(), useBro
   const directory = path.join(root, threadKey(threadId));
   if (await reachable(directory)) return directory;
   if (useBroker && await reachable(path.join(root, 'broker'))) {
-    await rpc(path.join(root, 'broker'), 'launch', { thread_id: threadId }); return directory;
+    try { await rpc(path.join(root, 'broker'), 'launch', { thread_id: threadId }); }
+    catch (e) { throw Error(`External launcher could not start observer: ${bounded(e)}`); }
+    return directory;
   }
-  await lock(directory, async () => { if (!await reachable(directory)) await launch(directory, threadId); });
+  // Only the external broker calls this with useBroker=false. Its children are
+  // already independent of the MCP host; a second job breakaway is unnecessary
+  // and can be denied by an enclosing Windows runner/job policy.
+  await lock(directory, async () => { if (!await reachable(directory)) await launch(directory, threadId, useBroker); });
   return directory;
 }
 export async function serve(directory: string, threadId?: string) {

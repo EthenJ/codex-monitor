@@ -94,3 +94,17 @@ test('observer survives forced cleanup of a strict Windows MCP host job', { skip
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('external Windows broker launches observers without a second job breakaway', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'monitor-job-broker-')), state = path.join(root, 'state');
+  const thread = randomUUID(), directory = path.join(state, thread), broker = path.join(state, 'broker');
+  const launcher = await owned(process.execPath, [fileURLToPath(new URL('./fixtures/job-broker.mjs', import.meta.url)), broker]);
+  try {
+    await eventually(() => existsSync(path.join(broker, 'endpoint.json')));
+    assert.equal(await ensureService(thread, state), directory);
+    assert.equal((await rpc(directory, 'status')).thread_id, thread);
+  } finally {
+    for (const dir of [directory, broker]) { try { await rpc(dir, 'shutdown'); } catch {} }
+    await launcher.stop(); await rm(root, { recursive: true, force: true });
+  }
+});

@@ -44,10 +44,10 @@ export function observeWindowsPid(pid: number, onExit: (code: number) => void, o
   return stop;
 }
 function quote(arg: string) { return '"' + arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1') + '"'; }
-export function launchWindowsDetached(executable: string, args: string[], cwd: string): number {
+export function launchWindowsDetached(executable: string, args: string[], cwd: string, breakaway = true): number {
   const k = kernel(), output: Json = {};
   const line = Buffer.from([executable, ...args].map(quote).join(' ') + '\0', 'utf16le');
-  if (!k.create(executable, line, null, null, 0, 0x01000000 | 0x08000000 | 0x200, null, cwd, { cb: koffi.sizeof(k.startup) }, output)) {
+  if (!k.create(executable, line, null, null, 0, (breakaway ? 0x01000000 : 0) | 0x08000000 | 0x200, null, cwd, { cb: koffi.sizeof(k.startup) }, output)) {
     throw Error(`Detached startup denied (Win32 ${k.error()}). Run npm run bootstrap in an external terminal outside the MCP host job.`);
   }
   k.close(output.thread); k.close(output.process);

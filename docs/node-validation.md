@@ -7,7 +7,7 @@ Validation date: 2026-11-01. This preview is developed on `develop`. Deployment 
 Environment: Windows build 26300, Node.js 24.22.0, npm 11.19.1, Codex CLI/daemon 0.166.0. No Codex source build or user model credentials were used in isolated tests.
 
 - TypeScript strict compilation passed.
-- **39 Node tests passed, zero skipped** with `CODEX_MONITOR_TEST_NATIVE=1`.
+- **40 Node tests passed, zero skipped** with `CODEX_MONITOR_TEST_NATIVE=1`.
 - Legacy Python compatibility suite: **115 tests, 97 passed and 18 platform/hardware skips**. Python is not a dependency of the Node plugin.
 - Both skill validators passed. Production dependency audit reported zero known vulnerabilities after updating Zod to 4.6.7.
 - Built a deployment package, installed production dependencies from its lock file, and installed it with the real `codex plugin marketplace add` / `codex plugin add` commands in an isolated Codex home. Codex reported version 0.3.0 and discovered the enabled `codex-monitor:codex-monitor` skill. The installed server exposed all seven tools and successfully armed/stopped an observer.
@@ -41,9 +41,13 @@ Codex 0.166.0 labels a truncated response body as `other`; recovery accepts only
 
 The container fixture installs Node dependencies and Codex 0.166.0 during image build. Execution uses `docker run --rm --network none`, so only loopback networking is available to the synthetic provider. A dedicated development CI job runs this fixture; the Node matrix also covers Windows, Ubuntu and macOS on Node 22 and 24. Configuration alone is not a passing result.
 
-Local Docker Desktop 4.97.0 was downloaded from Docker's official distribution and its SHA-256 verified. Installation was blocked because Windows `VirtualMachinePlatform` is disabled; the attempted WSL administrator launch returned “The operation was canceled by the user.” Docker was not installed, no reboot was performed, and no local container result is claimed.
+Local Docker Desktop 4.97.0 was downloaded from Docker's official distribution and its SHA-256 verified. Installation was blocked because Windows `VirtualMachinePlatform` is disabled; the attempted WSL administrator launch returned “The operation was canceled by the user.” The user reported that no confirmation window appeared and will handle installation manually. Automated elevation did not complete, no reboot was performed, and no local container result is claimed.
 
-At the time of the local checks, additional-platform and container CI results were pending. Live NVIDIA hardware, real distributed training, production provider outages and other Codex versions have not been validated for this Node implementation.
+The first [development CI run](https://github.com/EthenJ/codex-monitor/actions/runs/41225194674) passed all three native network cases in the container with external networking disabled. Node 22/24 checks passed on Ubuntu and macOS. Its two Windows Node jobs exposed an MCP registration failure that was not reproduced by the local Windows suite; follow-up diagnosis is tracked separately before declaring the matrix clean.
+
+The Windows launcher now avoids requesting a second job breakaway when an external broker starts an observer. A new Windows test reproduces an enclosing job that denies breakaway; observer startup succeeds through the broker. Direct MCP startup still requires breakaway or an external bootstrap. See Microsoft's [nested job rules](https://learn.microsoft.com/windows/win32/procthread/nested-jobs). A flaky legacy polling test was also changed to synchronize replacement/deletion with watcher readiness and observed progress instead of racing a short inactivity deadline. Local checks pass; hosted rerun is required to confirm the CI failure is resolved.
+
+Live NVIDIA hardware, real distributed training, production provider outages and other Codex versions have not been validated for this Node implementation. Standard Node matrix jobs skip native Codex tests when the CLI is unavailable; the dedicated container supplies the pinned CLI for real network fault coverage.
 
 ## Limits
 
