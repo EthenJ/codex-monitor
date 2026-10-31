@@ -43,7 +43,16 @@ The container fixture installs Node dependencies and Codex 0.166.0 during image 
 
 Local Docker Desktop 4.97.0 was downloaded from Docker's official distribution and its SHA-256 verified. Installation was blocked because Windows `VirtualMachinePlatform` is disabled; the attempted WSL administrator launch returned “The operation was canceled by the user.” The user reported that no confirmation window appeared and will handle installation manually. Automated elevation did not complete, no reboot was performed, and no local container result is claimed.
 
-The [development CI run for c6707af](https://github.com/EthenJ/codex-monitor/actions/runs/41225769585) passed all six Node 22/24 jobs on Windows, Ubuntu and macOS, including package builds. All three native network cases passed in the container with external networking disabled. Legacy Python jobs on Windows 3.10/3.12 still failed a timestamp-order assertion; the fixture now permits equal timestamps within the older Windows monotonic clock's granularity. The complete legacy matrix is being rerun.
+The final [development CI run for 1318741](https://github.com/EthenJ/codex-monitor/actions/runs/41226278410) completed with **all 18 jobs passing**:
+
+| Coverage | Result |
+| --- | --- |
+| Node 22 and 24 on Windows, Ubuntu and macOS; compilation, regression and deployment packaging | All six jobs passed |
+| Native HTTP 503, broken stream and manual interruption inside Docker with `--network none` | All three cases passed |
+| Legacy Python 3.10, 3.12 and 3.14 on all three platforms | All nine jobs passed |
+| Legacy tests without optional platform dependencies on Windows and Ubuntu | Both jobs passed |
+
+The legacy replacement/deletion fixture accepts equal timestamps within older Windows monotonic-clock ticks while retaining progress-count and stall-duration assertions. No production behavior was weakened to accommodate the test.
 
 The Windows launcher now avoids requesting a second job breakaway when an external broker starts an observer. A new Windows test reproduces an enclosing job that denies breakaway; observer startup succeeds through the broker locally and in hosted Windows CI. Direct MCP startup still requires breakaway or an external bootstrap. See Microsoft's [nested job rules](https://learn.microsoft.com/windows/win32/procthread/nested-jobs). A flaky legacy polling test was also changed to synchronize replacement/deletion with watcher readiness and observed progress instead of racing a short inactivity deadline.
 
