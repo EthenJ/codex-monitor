@@ -1,0 +1,130 @@
+# Node plugin: native results and recovery
+
+## Install
+
+Requires Node.js 22.22+ (24 recommended) and a compatible local Codex daemon. Validated with Codex 0.166.0. No Python runtime dependency.
+
+From the development checkout:
+
+```text
+npm ci
+npm run build
+npm run bootstrap
+codex plugin marketplace add .
+codex plugin add codex-monitor@codex-monitor
+```
+
+For a deployment package replace the first two commands with `npm ci --omit=dev`; compiled JavaScript is included. Restart the client. Disable an older standalone skill copy to avoid duplicate guidance. Codex must find the same Node environment and dependencies.
+
+Run bootstrap from an external terminal once per login/reboot. Its hidden launcher runs outside the MCP host's process job and installs no scheduled task/service. Stop it with `node codex-monitor/runtime/cli.js stop-broker`; existing observers retain their deadlines. Windows uses native breakaway flags and fails explicitly when denied; POSIX uses detached sessions.
+
+## Tools and state
+
+| Tool | Purpose |
+| --- | --- |
+| `monitor_start` | Register an observer; return readiness and deadline |
+| `monitor_status` | Monitors, delivery, wait and recovery; select a monitor for full evidence |
+| `monitor_stop` | Stop observation, preserving a watched PID |
+| `monitor_wait` | Record dependency and optionally pause goal with authorization |
+| `monitor_cancel_wait` | Cancel wait and mute its notifications; leave goal unchanged |
+| `monitor_ack` | Record handled or dismissed events and their resolution |
+| `monitor_recovery` | Configure bounded recovery after transient session errors |
+
+Every tool requires the exact caller thread UUID. Per-thread state lives under `~/.codex/monitor-node` or `CODEX_MONITOR_HOME`, outside watched trees. The private local HTTP endpoint uses a random bearer token. Observers survive MCP disconnects. Services exit after one idle minute once observations, delivery, waits and recovery settle.
+
+## Training example
+
+```json
+{
+  "thread_id": "00000000-0000-0000-0000-000000000001",
+  "name": "training-42",
+  "kind": "watchdog",
+  "options": {
+    "cwd": "C:/work/project",
+    "watch_file": "runs/metrics.json",
+    "pid": 12345,
+    "stalled_for_ms": 300000,
+    "gpu_util_below": 10,
+    "gpu_below_for_ms": 120000,
+    "gpu_recover_above": 20,
+    "gpu_id": "0",
+    "dead_if": "all",
+    "warmup_ms": 60000,
+    "watchdog_only": true,
+    "timeout_ms": 86400000
+  },
+  "instructions": "Inspect exit status and metrics. Evaluate after confirmed completion.",
+  "notify_on": ["process_exit", "watchdog_stalled", "monitor_error", "monitor_expired"],
+  "event_ttl_ms": 3600000
+}
+```
+
+File options: `watch_file` or `watch_directory`, `recursive`, `pattern`, `file_backend` (`auto`, `native`, `polling`), `poll_ms`, `stalled_for_ms`. Paths resolve against absolute `cwd`. Chokidar uses native events by default; polling is explicit. Parent subscriptions handle atomic replacement and initially missing files. Root replacement or permission errors are failures. File symlinks require the target path; recursive traversal does not follow directory symlinks.
+
+`cwd` must be a directory; an existing `watch_file` must be a regular file. File identity, size and timestamps are reconciled against the initial scan and previous observations, so unchanged startup/backend echoes do not create events or reset inactivity. Every observed file-version change resets inactivity even if its notification is debounced. Deletion and directory churn do not establish progress. This uses filesystem metadata rather than content hashing.
+
+GPU options: `gpu_id` (indices, UUIDs, PCI IDs, or `all`), `gpu_match` (`all`/`any`), `gpu_util_below`, `gpu_recover_above`, `gpu_below_for_ms`, `gpu_sample_ms`, `nvidia_smi`. Invalid/missing samples are unknown, never zero; they reset dwell evidence. In `any` mode the same card must remain low. `dead_if` combines file/GPU rules. Recovery events require `report_recovery: true` and `watchdog_recovered` in `notify_on`.
+
+PID identity uses a Windows handle, Linux `/proc` start time, or macOS process start-time checks. POSIX checks are local, not model turns. A watchdog never signals the observed PID. macOS unrelated-process exit codes are unavailable and start-time resolution limits PID-reuse detection.
+
+Commands use `kind: command`, `command`, `match` (JavaScript regex), optional `encoding`, `debounce_ms`, `max_events`, `timeout_ms` (maximum 30 minutes). They run through the platform shell. Lines are bounded to 16,000 characters. A Node guardian owns the tree; Windows kill-on-close jobs cover forced guardian termination. POSIX graceful cancellation cleans groups; SIGKILL cannot execute userspace cleanup. Watchdogs can run seven days; expiry notifies once and ends observation.
+
+Command debounce suppresses only consecutive identical matching lines within its interval; different matches still produce sensor events. Pending notifications may subsequently be superseded by newer evidence or command exit; inspect event history when reconciling results.
+
+## Native delivery and acknowledgement
+
+The existing daemon's WebSocket proxy receives `turn/start` with `input: []` and `toolOutput`. Events retain `functionCallOutput` identity rather than becoming user chat messages. Standard MCP notifications alone do not imply a new turn. No undocumented MCP wake feature or chat fallback is used.
+
+The service joins only an already-loaded thread for lifecycle notifications, without replacing it or changing its settings. Short event payloads carry IDs and evidence; full records are available through status. Model instructions and source evidence remain distinct.
+
+Before sending, duplicates are coalesced, newer matching events supersede pending ones, acknowledged events are skipped, and expired events are discarded. A 250 ms batching window groups at most eight events. Registration/history are bounded. Reusing a name after an old monitor finishes supersedes that monitor's pending events.
+
+Lifecycle: `pending -> sending -> submitted -> acknowledged`; alternatives include `superseded`, `expired`, `suppressed`, `failed`, and `unknown`. Turn completion does not prove every event was handled. Only `monitor_ack` records the agent's resolution. Acknowledgement/expiry cannot recall an already queued result. Uncertain submissions are not automatically retried; exactly-once execution is not guaranteed.
+
+## Native goal waiting
+
+Example authorization: “When only training remains, pause this goal; resume it on completion or a monitoring alert.” Supply the actual instruction in `goal_authorization`. Existing authorization persists; a nonempty string records intent but cannot prove consent.
+
+Original goal viewing/editing/status remain in Codex. The plugin preserves objective, budget and usage, pauses the goal during external waiting, sends a native result, then resumes the same unchanged goal. Without authorization the wait does not suppress native continuation. Release is ANY selected monitor.
+
+Later user edits, cancellation, exhausted budget, lost connection or ambiguous mutation stop restoration. Final accounting from the pausing turn may increase. The API lacks atomic compare-and-set; a user action racing the final verification remains a limitation.
+
+If a pending wake is acknowledged or expires, the wait becomes `interrupted` and leaves the goal unchanged. If every selected observer ends without a deliverable event, it becomes `failed`. Muted observers cannot create another wait; inspect their state and explicitly register a new observer when needed. These cases require reconciliation rather than an automatic goal resume.
+
+## Session recovery
+
+Recovery requires separate user authorization:
+
+```json
+{
+  "thread_id": "00000000-0000-0000-0000-000000000001",
+  "enabled": true,
+  "authorization": "Retry transient network errors, but never resume after I interrupt or pause.",
+  "retry_mode": "transient",
+  "retry_interval_ms": 300000,
+  "max_elapsed_ms": 10800000,
+  "lifetime_ms": 86400000,
+  "check_interval_ms": 30000,
+  "retry_rate_limits": false
+}
+```
+
+Every attempt waits the same **300 seconds** after the eligible failure is observed. There is no exponential backoff and no catch-up burst after downtime. The first eligible failure starts a **three-hour incident window**; retries and daemon outages do not reset it. No new submission starts at or after its deadline. An already running turn is not terminated. A completed turn resets the incident while the supervisor remains enabled.
+
+`retry_interval_ms` accepts 1,000–3,600,000 ms and `max_elapsed_ms` accepts 1,000–86,400,000 ms. Optional `max_attempts` accepts 1–86,400 and defaults to `ceil(max_elapsed_ms / retry_interval_ms)` (36 with defaults). This is a cap, not a promised attempt count: at most 35 attempts fit strictly before three hours when failures are immediate; host execution and checks can reduce that number. A smaller explicit cap stops earlier. `lifetime_ms` bounds the supervisor separately (24 hours by default, including healthy observation), and can also end recovery earlier.
+
+For compatibility, `base_delay_ms` is accepted as a deprecated alias for the fixed interval. It must agree with `retry_interval_ms` if both are present. Legacy `max_delay_ms` is validated to be at least that interval, but no longer produces exponential backoff. Existing explicit settings still apply; reconfigure to adopt new defaults. Invalid configuration leaves an existing supervisor intact.
+
+Timers and `check_interval_ms` read the local daemon, not the model. Codex retries first. The default `retry_mode: "transient"` accepts recognized terminal connection/stream/server failures; unknown and HTTP 401/403 errors remain ineligible, and rate-limit retries require `retry_rate_limits: true`. Codex 0.166.0 labels some truncated HTTP bodies `other`; narrowly matched observed transport signatures are eligible.
+
+When the user's authorization covers all failed turns, set `retry_mode: "all_failed"`. It accepts unlisted/new errors, absent error details, authentication failures and rate limits, irrespective of `retry_rate_limits`. It does not treat error text in normal tool output, a completed turn or a silent running turn as failure. Explicit host error codes `sessionBudgetExceeded`, `usageLimitExceeded` and `misalignmentPolicyViolation` remain ineligible in both modes. A broader retry may still fail until its underlying cause is fixed.
+
+The transient mode also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. Arbitrary `other` errors require `all_failed`. Recovery must already be enabled; delivery and observation alone do not enable it.
+
+Before retry, re-read latest turn, runtime status and goal. Interrupted turns, paused/ended goals, exhausted budget and new active work prevent recovery. Manual interruption disables the supervisor until re-enabled. Plugin waits suspend recovery. Silent long tools are not interrupted. Recovery continues the task after reconciling completed effects; it does not replay commands or restart training.
+
+Daemon loss causes local reconnect checks until the supervisor or active incident deadline. No model action happens before verification. Error eligibility and deadlines are rechecked after asynchronous host reads and before submission. Ambiguous submission disables retries as `unknown`. Restart disables recovery and marks existing observation/wait interrupted; reconfigure explicitly. Host APIs have no atomic compare-and-start, so concurrent user actions remain a race boundary.
+
+After an accepted retry, a stale latest-turn snapshot does not cause another submission for the same failed turn. `awaiting_host` means the supervisor is waiting locally for the submitted turn to appear. Only a distinct eligible failure can consume another retry attempt.
+
+Official references: [native tool-result turns](https://learn.chatgpt.com/docs/app-server#start-a-turn), [plugin packaging](https://developers.openai.com/plugins/build/plugins), [MCP Events hosts](https://developers.openai.com/plugins/build/mcp-events).
