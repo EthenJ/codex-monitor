@@ -1,0 +1,32 @@
+{
+  "name": "codex-monitor",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Event-driven workload monitoring and bounded Codex session recovery",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test tests/node/*.test.mjs",
+    "bootstrap": "node codex-monitor/runtime/cli.js bootstrap",
+    "package": "node tools/build-plugin.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "chokidar": "^6.0.0",
+    "koffi": "^2.12.0",
+    "ws": "^8.18.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.9.0"
+  },
+  "allowScripts": {
+    "koffi@2.16.3": true
+  }
+}

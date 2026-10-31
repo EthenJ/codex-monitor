@@ -2,8 +2,8 @@
   "mcpServers": {
     "monitor": {
       "type": "stdio",
-      "command": "python",
-      "args": ["${PLUGIN_ROOT}/codex-monitor/scripts/plugin_server.py"],
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/codex-monitor/runtime/server.js"],
       "cwd": "${PLUGIN_ROOT}"
     }
   }

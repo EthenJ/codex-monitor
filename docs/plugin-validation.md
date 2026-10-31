@@ -1,4 +1,6 @@
-# Plugin validation (Windows)
+# Historical Python v0.2 plugin validation (Windows)
+
+This report describes the superseded Python plugin. For the current Node plugin, see [Node validation](node-validation.md).
 
 Validation date: 2026-11-01. Development work is on `develop`; `main` and the published v0.1 release remain unchanged.
 

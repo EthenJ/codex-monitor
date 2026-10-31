@@ -1,4 +1,6 @@
 __pycache__/
+node_modules/
+codex-monitor/runtime/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/

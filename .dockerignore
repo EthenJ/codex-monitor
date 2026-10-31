@@ -1,0 +1,11 @@
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/
+!src/**
+!tests/
+!tests/node/
+!tests/node/**
+!tests/container/
+!tests/container/Dockerfile
