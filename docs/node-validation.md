@@ -1,8 +1,12 @@
 # Node v0.3 preview validation
 
+## Public v0.2.1 recovery update
+
+Package 0.2.1 adds a configurable fixed 300-second retry interval, a three-hour incident limit, and explicit `all_failed` coverage for unlisted terminal failures. Windows with native host tests enabled passed **85 tests: 81 passed, four expected skips**. See [v0.2.1 release notes](releases/v0.2.1.md) for current validation and the authorized main-history cleanup. The records below describe earlier snapshots.
+
 ## Public v0.2 release follow-up
 
-The public package version is now **0.2.0**, with tag `v0.2`; the historical preview labels below do not denote public releases. During release preparation, a real failed turn contained `codexErrorInfo: "other"` and the exact message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` The previous classifier rejected it. The current classifier accepts only that additional exact message, without accepting arbitrary unknown errors or overriding permanent error codes. The task's recovery supervisor was disabled when the real failure occurred.
+Public package **0.2.0** is preserved at tag `v0.2`; the historical preview labels below do not denote public releases. During release preparation, a real failed turn contained `codexErrorInfo: "other"` and the exact message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` The previous classifier rejected it. The v0.2 classifier accepted only that additional exact message, without accepting arbitrary unknown errors or overriding permanent error codes. The task's recovery supervisor was disabled when the real failure occurred.
 
 A synthetic SSE `response.failed` provider reproduced the same message and `other` classification through Codex 0.166.0. The native test verified a terminal failure, backoff, one recovery submission and successful completion. Unknown/quoted/suffixed messages and permanent error codes remain rejected. Windows with native tests enabled passed **76 tests: 72 passed, four expected skips**. Release-specific CI is recorded in the [release notes](releases/v0.2.md).
 

@@ -153,18 +153,131 @@ test('only the observed provider-busy other error is eligible for recovery', () 
     assert.equal(retryable({ codexErrorInfo: 'other', message: other }), false);
   }
 });
-async function recoveryFixture(t) {
-  const host = new Host(); host.thread = randomUUID(); host.turn = { id: 'failed', rootTurnId: 'failed', status: 'failed', error: { codexErrorInfo: 'serverOverloaded' } };
-  const recovery = new Recovery(host.thread, async () => host, () => {}, () => false);
+async function recoveryFixture(t, config = {}, error = { codexErrorInfo: 'serverOverloaded' }, waiting = () => false) {
+  const host = new Host(); host.thread = randomUUID(); host.turn = { id: 'failed', rootTurnId: 'failed', status: 'failed', error };
+  const recovery = new Recovery(host.thread, async () => host, () => {}, waiting);
   host.on('notification', (m,p) => recovery.notice(m,p));
   t.after(() => recovery.close());
-  await recovery.configure({ enabled: true, authorization: 'Retry transient errors, never manual interruptions', base_delay_ms: 1000, max_delay_ms: 1000, check_interval_ms: 1000, max_attempts: 2 });
+  await recovery.configure({ enabled: true, authorization: 'Fixture: retry failed turns under the selected policy, never manual interruptions', retry_interval_ms: 1000, check_interval_ms: 1000, max_attempts: 2, ...config });
   await recovery.check(); return { recovery, host };
 }
 test('recovery submits native tool output only after backoff and verified failed turn', async t => {
   const { recovery, host } = await recoveryFixture(t);
   assert.equal(host.submissions.length, 0); recovery.state.next_retry_at = 0; await recovery.check();
   assert.equal(host.submissions.length, 1); assert.deepEqual(host.submissions[0].input, []); assert.equal(recovery.state.attempts, 1);
+});
+
+test('all_failed covers unlisted, missing, authentication and rate-limit errors but preserves host stops', () => {
+  for (const error of [null, undefined, {}, { codexErrorInfo: 'brandNewFailure' }, { codexErrorInfo: 'unauthorized' },
+    { codexErrorInfo: 'other', message: 'Unlisted error' }, { codexErrorInfo: 'rateLimitExceeded' },
+    { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } } }]) {
+    assert.equal(retryable(error, false, 'all_failed'), true);
+    assert.equal(retryable(error), false);
+  }
+  for (const code of ['sessionBudgetExceeded', 'usageLimitExceeded', 'misalignmentPolicyViolation']) {
+    for (const value of [code, { [code]: {} }]) assert.equal(retryable({ codexErrorInfo: value }, true, 'all_failed'), false);
+  }
+});
+
+test('default fixed five-minute retries stop at the three-hour incident boundary', async t => {
+  const start = 1800000000000;
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const { recovery, host } = await recoveryFixture(t, { retry_mode: 'all_failed', retry_interval_ms: undefined, max_attempts: undefined }, null);
+  assert.equal(recovery.state.policy.retry_interval_ms, 300000);
+  assert.equal(recovery.state.policy.max_elapsed_ms, 10800000);
+  assert.equal(recovery.state.policy.max_attempts, 36);
+  for (let attempt = 1; attempt < 36; attempt++) {
+    const due = start + attempt * 300000;
+    assert.equal(recovery.state.next_retry_at, due);
+    t.mock.timers.setTime(due - 1); await recovery.check();
+    assert.equal(host.submissions.length, attempt - 1);
+    t.mock.timers.setTime(due); await recovery.check();
+    assert.equal(host.submissions.length, attempt);
+    assert.equal(host.submissions.at(-1).rootTurnId, 'failed');
+    assert.equal(JSON.parse(host.submissions.at(-1).toolOutput.output).retry_mode, 'all_failed');
+    host.turn.status = 'failed'; host.turn.error = { codexErrorInfo: 'newUnknownError' };
+    await recovery.check();
+  }
+  t.mock.timers.setTime(start + 10800000); await recovery.check();
+  assert.equal(host.submissions.length, 35); assert.equal(recovery.state.state, 'exhausted');
+  assert.equal(recovery.state.enabled, false);
+});
+
+test('custom interval and elapsed limit work without an early legacy attempt cap', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  const { recovery, host } = await recoveryFixture(t, { retry_interval_ms: 7000, max_elapsed_ms: 15000, max_attempts: undefined });
+  assert.equal(recovery.state.policy.max_attempts, 3);
+  for (let i = 0; i < 2; i++) {
+    t.mock.timers.setTime(Date.now() + 7000); await recovery.check();
+    host.turn.status = 'failed'; host.turn.error = { codexErrorInfo: 'serverOverloaded' }; await recovery.check();
+  }
+  assert.equal(host.submissions.length, 2);
+  t.mock.timers.setTime(Date.now() + 1000); await recovery.check();
+  assert.equal(recovery.state.state, 'exhausted'); assert.equal(host.submissions.length, 2);
+});
+
+test('invalid retry configuration preserves the current supervisor and legacy delay is a fixed alias', async t => {
+  const { recovery } = await recoveryFixture(t);
+  for (const config of [{ retry_mode: 'anything' }, { retry_interval_ms: 0 }, { max_elapsed_ms: -1 },
+    { max_attempts: 0 }, { retry_interval_ms: 1000, base_delay_ms: 2000 }, { retry_interval_ms: 2000, max_delay_ms: 1000 }]) {
+    const before = recovery.snapshot();
+    await assert.rejects(recovery.configure({ enabled: true, authorization: 'Fixture', ...config }));
+    assert.deepEqual(recovery.snapshot(), before);
+  }
+  await recovery.configure({ enabled: true, authorization: 'Legacy fixture', base_delay_ms: 2000, max_delay_ms: 4000 });
+  assert.equal(recovery.state.policy.retry_interval_ms, 2000);
+  assert.equal(recovery.state.policy.retry_mode, 'transient');
+});
+
+test('all_failed respects terminal status, manual stop, goal edits, budgets, waits and ambiguous writes', async t => {
+  for (const status of ['completed', 'inProgress', 'interrupted']) {
+    const { recovery, host } = await recoveryFixture(t, { retry_mode: 'all_failed' }, null);
+    host.turn.status = status; recovery.state.next_retry_at = 0; await recovery.check();
+    assert.equal(host.submissions.length, 0);
+    if (status === 'interrupted') assert.equal(recovery.state.enabled, false);
+  }
+  for (const change of [{ status: 'paused' }, { tokensUsed: 10000 }, { objective: 'New user task' }]) {
+    const { recovery, host } = await recoveryFixture(t, { retry_mode: 'all_failed' }, null);
+    Object.assign(host.goal, change); recovery.state.next_retry_at = 0; await recovery.check();
+    assert.equal(host.submissions.length, 0); assert.equal(recovery.state.enabled, false);
+  }
+  const waiting = await recoveryFixture(t, { retry_mode: 'all_failed' }, null, () => true);
+  assert.equal(waiting.recovery.state.state, 'waiting'); assert.equal(waiting.host.submissions.length, 0);
+  const ambiguous = await recoveryFixture(t, { retry_mode: 'all_failed' }, null);
+  let attempts = 0;
+  ambiguous.host.beforeSubmit = () => { attempts++; throw new RpcError('Lost write response', true); };
+  ambiguous.recovery.state.next_retry_at = 0; await ambiguous.recovery.check(); await ambiguous.recovery.check();
+  assert.equal(attempts, 1); assert.equal(ambiguous.recovery.state.state, 'unknown');
+});
+
+test('pre-submit verification rechecks error policy and elapsed deadline', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  for (const race of ['policy', 'deadline']) {
+    const { recovery, host } = await recoveryFixture(t, { retry_mode: 'all_failed' }, null);
+    const rpc = host.rpc.bind(host); let reads = 0;
+    host.rpc = async (method, params) => {
+      if (method === 'thread/turns/list' && ++reads === 2) {
+        if (race === 'policy') host.turn.error = { codexErrorInfo: 'sessionBudgetExceeded' };
+        else t.mock.timers.setTime(recovery.state.incident_started_at + recovery.state.policy.max_elapsed_ms);
+      }
+      return rpc(method, params);
+    };
+    recovery.state.next_retry_at = 0; await recovery.check();
+    assert.equal(host.submissions.length, 0);
+    assert.equal(recovery.state.state, race === 'policy' ? 'not_retryable' : 'exhausted');
+  }
+});
+
+test('incident limit expires during daemon loss and supervisor lifetime remains independent', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1800000000000 });
+  for (const lifetime of [1000, 86400000]) {
+    const { recovery, host } = await recoveryFixture(t, { lifetime_ms: lifetime, max_elapsed_ms: 2000 });
+    host.rpc = async () => { throw Error('Offline'); };
+    await recovery.check(); assert.equal(recovery.state.state, 'connection_unavailable');
+    t.mock.timers.setTime(Date.now() + Math.min(lifetime, 2000)); await recovery.check();
+    assert.equal(recovery.state.state, lifetime === 1000 ? 'expired' : 'exhausted');
+    assert.equal(host.submissions.length, 0);
+  }
 });
 test('manual interruption cancels armed retry', async t => {
   const { recovery, host } = await recoveryFixture(t);

@@ -26,7 +26,7 @@ function successfulStream(res) {
   ];
   events.forEach((e, i) => res.write(`event: ${e.type}\ndata: ${JSON.stringify({ ...e, sequence_number: i })}\n\n`)); res.end();
 }
-async function fixture(t) {
+async function fixture(t, config = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'monitor-network-'));
   const state = { mode: 'error', calls: 0, requests: [], sockets: new Set() };
   const server = createServer(async (req, res) => {
@@ -37,10 +37,10 @@ async function fixture(t) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write('event: response.created\ndata: {"type":"response.created","response":{"id":"cut","status":"in_progress","output":[]}}\n\n');
       setTimeout(() => res.destroy(), 30);
-    } else if (state.mode === 'busy') {
+    } else if (state.mode === 'busy' || state.mode === 'unknown') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const event = { type: 'response.failed', response: { id: 'busy', status: 'failed', output: [],
-        error: { code: 'server_error', message: 'Our servers are currently busy. Please try again in a moment.' } } };
+        error: { code: 'server_error', message: state.mode === 'busy' ? 'Our servers are currently busy. Please try again in a moment.' : 'Unlisted fixture provider failure XYZ.' } } };
       res.end(`event: response.failed\ndata: ${JSON.stringify(event)}\n\n`);
     } else if (state.mode === 'hang') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(': waiting\n\n');
@@ -60,7 +60,7 @@ async function fixture(t) {
     await new Promise(r => server.close(r)); await rm(root, { recursive: true, force: true });
   });
   await recovery.configure({ enabled: true, authorization: 'Fixture: retry transient errors, stop on manual interruption',
-    max_attempts: 2, base_delay_ms: 1000, max_delay_ms: 2000, check_interval_ms: 1000, max_elapsed_ms: 10000 });
+    max_attempts: 2, retry_interval_ms: 1000, check_interval_ms: 1000, max_elapsed_ms: 10000, ...config });
   return { state, bridge, recovery, threadId };
 }
 test('real provider HTTP 503 recovers through native tool output', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
@@ -83,14 +83,30 @@ test('real provider stream disconnect recovers after terminal failure', { skip: 
   await until(() => f.recovery.state.last_submission_at);
   await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
 });
-test('manual interrupt of real waiting provider never triggers recovery', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
-  const f = await fixture(t); f.state.mode = 'hang';
+for (const retry_mode of ['transient', 'all_failed']) test(`manual interrupt of real waiting provider never triggers recovery (${retry_mode})`, { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
+  const f = await fixture(t, { retry_mode }); f.state.mode = 'hang';
   const result = await f.bridge.rpc('turn/start', { threadId: f.threadId, input: [{ type: 'text', text: 'Fixture: answer once.' }] });
   await until(() => f.state.calls > 0);
   await f.bridge.rpc('turn/interrupt', { threadId: f.threadId, turnId: result.turn.id });
   await until(() => f.recovery.state.state === 'cancelled');
   f.state.mode = 'success'; await f.recovery.check();
   assert.equal(f.recovery.state.attempts, 0); assert.equal(f.recovery.state.enabled, false);
+  assert.equal(f.state.requests.filter(r => r.body.includes('session_recovery')).length, 0);
+});
+
+test('unlisted real provider failure retries only under all_failed mode', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
+  const f = await fixture(t); f.state.mode = 'unknown';
+  await f.bridge.rpc('turn/start', { threadId: f.threadId, input: [{ type: 'text', text: 'Fixture: answer once.' }] });
+  await until(() => f.recovery.state.state === 'not_retryable');
+  const failed = await latestTurn(f.bridge, f.threadId);
+  assert.equal(failed.error.codexErrorInfo, 'other'); assert.equal(f.recovery.state.attempts, 0);
+  await f.recovery.configure({ enabled: true, authorization: 'Fixture: retry all failed turns except host stops and manual interruption',
+    retry_mode: 'all_failed', retry_interval_ms: 1000, max_elapsed_ms: 10000, check_interval_ms: 1000 });
+  await until(() => f.recovery.state.state === 'backoff'); f.state.mode = 'success';
+  await until(() => f.recovery.state.last_submission_at);
+  await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
+  assert.equal(f.state.requests.filter(r => r.body.includes('session_recovery')).length, 1);
+  assert.equal((await latestTurn(f.bridge, f.threadId)).rootTurnId, failed.rootTurnId || failed.id);
 });
 
 test('real provider busy stream error recovers despite Codex classifying it as other', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {

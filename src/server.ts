@@ -27,9 +27,14 @@ server.registerTool('monitor_cancel_wait', { description: 'Cancel wait, mute sel
 server.registerTool('monitor_ack', { description: 'Acknowledge specific events after inspecting and reconciling their evidence. State a resolution, including already handled or superseded. Prevent pending stale wakeups; never claim unfinished work completed.', inputSchema: {
   thread_id: thread, event_ids: z.array(z.string().uuid()), resolution: z.string(),
 } }, ({ thread_id, ...params }) => call(thread_id, 'ack', params));
-server.registerTool('monitor_recovery', { description: 'Configure bounded automatic recovery after verified transient Codex turn failures. Requires explicit user authorization. Interrupted turns, paused goals, budgets, permanent errors and uncertain submissions never auto-retry. Timers inspect host state locally, not by invoking the model. Disabling cancels pending retries.', inputSchema: {
-  thread_id: thread, enabled: z.boolean(), authorization: z.string().optional(), max_attempts: z.number().int().optional(),
-  base_delay_ms: z.number().int().optional(), max_delay_ms: z.number().int().optional(), max_elapsed_ms: z.number().int().optional(),
+server.registerTool('monitor_recovery', { description: 'Configure bounded recovery after verified failed Codex turns. Requires explicit user authorization. retry_mode defaults to transient; all_failed includes unknown, authentication and other failures without an allowlist, but never overrides manual interruption, paused goals, budget/usage/policy stops or uncertain submissions. Local timers do not invoke the model. Disabling cancels pending retries.', inputSchema: {
+  thread_id: thread, enabled: z.boolean(), authorization: z.string().optional(),
+  max_attempts: z.number().int().optional().describe('Optional earlier attempt cap; default ceil(max_elapsed_ms / retry_interval_ms), 36 with default timing.'),
+  retry_mode: z.enum(['transient', 'all_failed']).optional().describe('Use all_failed only when the user requests broader failed-turn retries; it also includes rate-limit errors regardless of retry_rate_limits.'),
+  retry_interval_ms: z.number().int().optional().describe('Fixed delay after each eligible failure. Default 300000 (300 seconds).'),
+  max_elapsed_ms: z.number().int().optional().describe('Maximum elapsed time per failure incident. Default 10800000 (3 hours).'),
+  base_delay_ms: z.number().int().optional().describe('Deprecated alias for retry_interval_ms.'),
+  max_delay_ms: z.number().int().optional().describe('Legacy validation only; no exponential backoff. Must be at least the fixed interval.'),
   lifetime_ms: z.number().int().optional(), check_interval_ms: z.number().int().optional(), retry_rate_limits: z.boolean().optional(),
 } }, ({ thread_id, ...params }) => call(thread_id, 'recovery', params));
 await server.connect(new StdioServerTransport());

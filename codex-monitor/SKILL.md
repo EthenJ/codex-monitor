@@ -43,7 +43,9 @@ Without authorization, a wait record does not stop an active goal from continuin
 
 Use `monitor_recovery` only when the user authorizes automatic session retries. It is separate from workload monitoring. Quote the applicable instruction in `authorization`; select finite lifetime, retry count and elapsed-time limits. `enabled: false` cancels pending retries.
 
-The supervisor waits for a verified terminal failed turn; Codex's own retries run first. Recognized transient connection, stream and server failures receive bounded exponential backoff. Manual interruption, paused/ended goals, budget/usage exhaustion, authentication/policy errors, new active work and uncertain submissions must not be overridden. Unknown errors are reported rather than guessed transient. Silence or a long tool call does not prove failure.
+The supervisor waits for a verified terminal failed turn; Codex's own retries run first. Use the default `retry_mode: transient` for recognized connection, stream and server failures. If the user requests retries for all failed turns, including unlisted errors, choose `retry_mode: all_failed`; this also includes authentication and rate-limit errors. Both modes preserve manual interruption, paused/ended goals, explicit host budget/usage/policy stops, new active work and uncertain submissions. Silence or a long tool call does not prove failure.
+
+Defaults are a fixed 300-second delay after each eligible failure and a three-hour limit per incident. Configure `retry_interval_ms` and `max_elapsed_ms` when the user specifies different limits; there is no exponential backoff. An optional `max_attempts` can stop earlier. Report the actual policy from status, and distinguish the incident limit from the supervisor's separate lifetime. Do not enable recovery merely because workload monitoring is active.
 
 A recovery event means continue the existing task, not replay the last shell command. Inspect completed tool effects and running workloads first. Never restart training merely because the conversation failed. Recovery timers inspect the local host without invoking the model while healthy or waiting for training.
 
