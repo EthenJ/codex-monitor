@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.2.0';
 export type Json = Record<string, any>;
 export const id = () => randomUUID();
 export const now = () => Date.now();

@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import { existsSync, globSync } from 'node:fs';
 import path from 'node:path';
 import { owned, Owned } from './processes.js';
-import { Json } from './common.js';
+import { Json, VERSION } from './common.js';
 
 export class RpcError extends Error {
   constructor(message: string, public uncertain = false, public code?: number) { super(message); }
@@ -59,7 +59,7 @@ export class Bridge extends EventEmitter implements BridgeLike {
         await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
         client.sendRaw = message => { ws.send(message); };
       }
-      await client.rpc('initialize', { clientInfo: { name: 'codex_monitor', version: '0.3.0' }, capabilities: { experimentalApi: false } });
+      await client.rpc('initialize', { clientInfo: { name: 'codex_monitor', version: VERSION }, capabilities: { experimentalApi: false } });
       client.sendRaw(JSON.stringify({ method: 'initialized' }));
       return client;
     } catch (e) { await client.close(); throw e; }

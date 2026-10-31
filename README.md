@@ -2,15 +2,18 @@
 
 A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
 
+Version **0.2.0** replaces the v0.1 standalone Python skill with a Node plugin. The earlier v0.2/v0.3 development-preview labels were not public releases; the public upgrade from v0.1 is tagged `v0.2`.
+
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
 ## Install
 
 Requires Node.js 22.22+ (24 recommended) and a compatible local Codex daemon. Validated with Codex 0.166.0.
 
+From the deployment checkout or extracted release package:
+
 ```text
-npm ci
-npm run build
+npm ci --omit=dev
 npm run bootstrap
 codex plugin marketplace add .
 codex plugin add codex-monitor@codex-monitor
@@ -18,7 +21,9 @@ codex plugin add codex-monitor@codex-monitor
 
 Restart Codex to load the seven tools. Disable older standalone copies of the skill to avoid duplicate guidance. Bootstrap starts a hidden launcher outside the MCP client's process job; run it once per login/reboot from an external terminal. It installs no OS service or scheduled task.
 
-For a prebuilt deployment package replace the first two commands with `npm ci --omit=dev`. The Node plugin has no Python runtime dependency. Native bindings use Koffi's published prebuilt binaries where available.
+When using the source checkout on `develop`, run `npm ci` and `npm run build` before bootstrap and installation instead. The Node plugin has no Python runtime dependency. Native bindings use Koffi's published prebuilt binaries where available.
+
+When upgrading from v0.1, stop its old observers and disable/remove the standalone skill before enabling the plugin, so both versions do not send callbacks. Install the complete package, not just its inner skill directory. For an installed preview, stop its monitors/waits/recovery and broker, remove the old plugin with `codex plugin remove codex-monitor@codex-monitor`, then install this version and restart Codex. Old monitor state is not automatically migrated or rearmed; register the required observers again. Existing training processes observed by watchdogs remain independent.
 
 ## Typical request
 
@@ -42,14 +47,16 @@ Recovery is opt-in. Defaults: five attempts, exponential delay from 15 seconds, 
 
 Codex's built-in retries finish first. Verified transient connection, stream and server failures qualify. Manual interruption disables recovery. Paused/ended goals, exhausted budgets, authentication/policy errors, active user work and ambiguous submission are never overridden. Silence alone is not failure. Recovery reconciles completed effects before continuing; it does not automatically replay commands or restart training.
 
-## Build and test
+## Development and validation
+
+Source, tests and build tooling live on the `develop` branch. Run these commands there:
 
 ```text
 npm test
-npm run package -- dist/codex-monitor-v0.3.0
+npm run package -- dist/codex-monitor-v0.2.0
 ```
 
-Deployment packages include compiled JavaScript, dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, reports, caches and local state are excluded. Development stays on `develop`; this preview does not update deployment `main` or v0.1.
+Deployment packages include compiled JavaScript, production dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, development dependencies, reports, caches and local state are excluded. Deployment pull requests target `main`; development stays on `develop`. The v0.1 tag remains available for the standalone release.
 
 Enable isolated native App Server tests with `CODEX_MONITOR_TEST_NATIVE=1`. They use temporary Codex homes and a local synthetic model endpoint, never user credentials or paid models. Network fixtures inject HTTP failures, broken streams and manual interruption.
 
@@ -81,4 +88,4 @@ State lives under `~/.codex/monitor-node` or `CODEX_MONITOR_HOME`, outside watch
 
 ## Legacy helpers
 
-Original Python helpers and regression tests remain on `develop` for compatibility. They are not used or shipped by the Node plugin. See [v0.1 standalone documentation](https://github.com/EthenJ/codex-monitor/blob/main/README.md).
+Original Python helpers and regression tests remain on `develop` for compatibility. They are not used or shipped by the Node plugin. See [v0.1 standalone documentation](https://github.com/EthenJ/codex-monitor/blob/v0.1/README.md).

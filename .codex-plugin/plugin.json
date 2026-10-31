@@ -1,8 +1,10 @@
 {
   "name": "codex-monitor",
-  "version": "0.3.0",
+  "version": "0.2.0",
   "description": "Workload events and training watchdogs that wake the same Codex thread.",
-  "author": { "name": "EthenJ" },
+  "author": {
+    "name": "EthenJ"
+  },
   "homepage": "https://github.com/EthenJ/codex-monitor",
   "repository": "https://github.com/EthenJ/codex-monitor",
   "license": "MIT",
