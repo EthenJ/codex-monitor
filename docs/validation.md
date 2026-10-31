@@ -23,7 +23,7 @@ The review covered all four runtime scripts, skill instructions and references, 
 | GPU shutdown | A hung query could delay watchdog expiry; an unexpected worker exception could silently disable sampling. | Queries are cancellable independently of their ten-second limit, and unexpected worker failures are fatal sensor errors. |
 | Resource bounds | Matching output and callback diagnostics could accumulate without suitable bounds. | Matched lines use a 256-item backpressure queue; file/GPU/PID events have a 1,024-item queue with explicit overflow failure. Callback output is drained into a 64 KiB tail. Lines over 16,000 characters fail explicitly; Codex messages are capped with a truncation marker. |
 
-## Local tests
+## Original Windows review (before the Ubuntu changes)
 
 Windows 11 Pro for Workstations 26H2, build 26300; Codex CLI 0.166.0.
 
@@ -107,7 +107,7 @@ The GPU oracle enumerates **13,122** four-sample sequences for two cards: each c
 
 All four Python versions, the clean minimal environment and the four opt-in GPU tests were rerun after these changes. Resource warnings remain errors. The remaining platform/hardware limits below still apply.
 
-## Windows verification handoff
+## Windows verification handoff (historical, Ubuntu commit `6983e66`)
 
 The [Windows validation checklist](windows-validation.md) provides PowerShell commands and expected results for the final working tree. A further test review corrected the late-observer cancellation regression to intercept both platform backends: the earlier test only intercepted `_watchdog()` and would incorrectly run real `_windows()` during the simulation on Windows. The corrected dispatch was also exercised locally with a simulated Windows platform. The live GPU invalid-selection test now accepts either a nonzero driver response or a rejected partial result, matching the adapter's two failure paths.
 
@@ -115,9 +115,27 @@ Three new tests in `tests/test_windows.py` require real Windows: repeated cancel
 
 The final local checks on Python 3.10.19, 3.12.3, 3.13.11 and 3.14.3 each found 114 tests: **106 passed / 8 skipped** (four real-Windows tests in total and four opt-in GPU tests). The clean Python 3.12 environment passed **103 / 114**, with 11 expected skips. All four live GPU checks passed again. Local verification preceded the commit; the handoff checklist records both Git state and normalized source hashes to distinguish the tested source from older Windows results. A source-only ZIP was also prepared locally with all new tests and the checklist, plus `VALIDATION-SOURCE.json`; it excludes virtual environments, caches and Git metadata. Git users should verify the published revision with the checklist in that revision.
 
+## Windows follow-up after the Ubuntu changes
+
+The Ubuntu runtime revision `6983e66` was pulled and tested on native Windows 11 Pro for Workstations 26H2, build 26300, x64, PowerShell 7.6.9. Runtime scripts required no further changes. See the [Windows execution report and repeatable checklist](windows-validation.md) for full details.
+
+| Local environment | Discovered / passed / skipped | Result |
+| --- | --- | --- |
+| Python 3.10.0, no optional dependencies | 115 / 97 / 18 | Pass |
+| Python 3.12.0, no optional dependencies | 115 / 97 / 18 | Pass |
+| Python 3.14.8, clean venv without optional dependencies | 115 / 97 / 18 | Pass |
+| Python 3.14.8, isolated venv with watchdog 6.0.0 and psutil 7.2.2 | 115 / 97 / 18 | Pass |
+| Python 3.12.0, source copied to a Chinese/space-containing directory | 115 / 97 / 18 | Pass |
+
+All runs treated resource warnings as errors. Final logs contained no resource warnings, ignored exceptions or thread tracebacks. The 18 skips are 14 POSIX/Linux-only tests and four opt-in live GPU checks. All four Windows-specific tests executed. Both skill validators, CLI help and `pip check` passed. A nonexistent GPU provider returned exit status 1 with one error event and an unavailable sensor, without a false health transition. Live NVIDIA sampling remains untested on this Windows host; the Ubuntu hardware results above remain valid for that host.
+
+The initial local 3.10/3.12 runs reproduced the [incoming CI handle-count failure](https://github.com/EthenJ/codex-monitor/actions/runs/41211603526). The test retained its final watcher object while the warm-up object had already been released. On Python 3.12, construction alone added four synchronization handles: baseline 136, constructed 140, armed 143, closed-but-retained 140, released 136. Three further batches of 20 start/close/release cycles each remained at 136. The regression now releases the watcher after checking its thread has exited, before measuring; its leak tolerance is unchanged.
+
+An additional real Windows console test sends `CTRL_C_EVENT` inside a separate hidden console. Native and snapshot watchers and the command helper must emit a final cancelled record and exit successfully. The observed PID remains alive, and owned command descendants cannot continue writing after cancellation. This complements the existing forced-termination Job Object check and does not send console signals to unrelated processes. Source discovery is now 115; non-Windows hosts skip this additional Windows-only test. No live Codex wake-up was attempted.
+
 ## Cross-platform CI
 
-The workflow runs Windows, Ubuntu and macOS with Python 3.10, 3.12 and 3.14: nine combinations. Optional platform dependencies are installed to exercise the native `watchdog` and PID adapters. An additional Ubuntu/Python 3.12 job runs without optional dependencies, exercising actual snapshot fallback. Separate tests cover explicit snapshot mode and missing-dependency behavior. Each job has a ten-minute timeout. Check the workflow's commit-specific result before attributing a pass to a revision.
+The workflow runs Windows, Ubuntu and macOS with Python 3.10, 3.12 and 3.14: nine combinations. Optional platform dependencies are installed to exercise the native `watchdog` and PID adapters. Two additional Ubuntu/Windows Python 3.12 jobs run without optional dependencies, exercising actual snapshot fallback on Ubuntu and dependency-free Win32 adapters on Windows. Separate tests cover explicit snapshot mode and missing-dependency behavior. All 11 jobs have a ten-minute timeout. Check the workflow's commit-specific result before attributing a pass to a revision.
 
 The [first expanded CI run](https://github.com/EthenJ/codex-monitor/actions/runs/41144612492) passed all six Windows/Ubuntu combinations and exposed the macOS path and zombie-group cleanup defects above. These were fixed rather than skipped. Four new regressions cover canonical paths, unrelated notifications, the exited-leader retry, and genuine permission failures. The atomic-replacement health test now waits for subscription/progress acknowledgements and uses an explicit short snapshot interval; the native event test still exercises create/modify/rename/delete. The simulated GPU integration test holds its low state until the alert is delivered, so a busy consumer does not miss an artificially brief test condition. The slow-callback backlog regression stops after three events with a separate safety deadline, instead of requiring three 100 ms callbacks to fit a 350 ms wall-clock budget on a shared runner.
 

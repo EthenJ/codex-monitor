@@ -168,9 +168,9 @@ These query actual indices, UUIDs and PCI addresses, reject a partially missing 
 
 | Platform | Status |
 | --- | --- |
-| Windows 11 Pro for Workstations 26H2 (build 26300) | **Tested locally.** All 59 tests pass on Python 3.10.0, 3.12.0, and 3.14.8. Codex CLI 0.166.0. |
+| Windows 11 Pro for Workstations 26H2 (build 26300) | **Retested after the Ubuntu changes.** Python 3.10.0, 3.12.0, and 3.14.8: 115 discovered, 97 passed, 18 expected skips. Minimal environments, optional dependencies on 3.14, and a Chinese/space-containing source path on 3.12 passed. Codex CLI 0.166.0. |
 | Ubuntu 24.04.3 LTS, x86_64 | **Tested locally.** Python 3.10, 3.12, 3.13 and 3.14; native inotify, snapshot fallback, symlink paths, atomic file replacement, PID waiting and SIGTERM cleanup. See the validation report for exact runtimes and results. |
-| Windows / Ubuntu / macOS CI | Nine jobs cover Python 3.10, 3.12, and 3.14 on all three platforms, with native file backends and PID waiting; an additional Ubuntu job omits optional dependencies. See [workflow results](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) for each revision. |
+| Windows / Ubuntu / macOS CI | Nine jobs cover Python 3.10, 3.12, and 3.14 on all three platforms, with native file backends and PID waiting; two additional Ubuntu/Windows jobs omit optional dependencies. See [workflow results](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) for each revision. |
 | Live NVIDIA GPU | **Tested on Ubuntu with two GeForce RTX 4090 D cards.** Real selection, sampling, dry-run and low-utilization callback passed. Recovery, hysteresis, outages and multi-card dwell boundaries also have deterministic tests. |
 | Live Codex wake-up | **Not verified end to end.** Tests validate callback payloads, CLI argv, and failure/warning handling; they do not prove that a real idle thread executes a follow-up turn. |
 
@@ -178,7 +178,7 @@ What the Windows run covered: native `ReadDirectoryChangesW` create/modify/renam
 
 The [validation report](docs/validation.md) records the audit findings, commands, platform boundaries, cancellation tests, and the distinction between callback transport tests and a live Codex turn.
 
-For verification of these changes on a Windows machine, use the [Windows validation checklist (中文)](docs/windows-validation.md). It includes PowerShell commands, expected test/skip counts, native handle and Job Object checks, live GPU checks, and a results template.
+The [Windows validation results and checklist (中文)](docs/windows-validation.md) record the latest execution and repeatable commands. All four Windows-specific tests passed: pending-read handle cleanup, actual PID exit status, forced monitor termination with Job cleanup, and real console Ctrl+C for native/polling watchers and owned commands. Windows live GPU checks remain untested because this host has no `nvidia-smi`.
 
 Before relying on a GPU rule, validate the workload's thresholds locally with `--dry-run`. Install the optional platform dependencies to use native Linux/macOS file events; the backend is reported in the JSONL log. POSIX `SIGTERM` and Ctrl+C clean up owned commands, callbacks and GPU queries while preserving an observed training PID.
 

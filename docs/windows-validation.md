@@ -1,8 +1,33 @@
-# Windows 验证清单
+# Windows 验证结果与复测清单
+
+## 2026-10-31 实测结果
+
+已拉取 Ubuntu 提交 `6983e66`，在原生 Windows 11 Pro for Workstations 26H2（10.0.26300、x64）、PowerShell 7.6.9 上执行本轮验证，Codex CLI 为 0.166.0。本轮只修改测试、CI 和文档，运行时代码保留该 Ubuntu 提交。
+
+| 环境/项目 | 结果 |
+| --- | --- |
+| Python 3.10.0 x64，无 watchdog/psutil | 115 项：97 通过、18 跳过，退出码 0 |
+| Python 3.12.0 x64，无 watchdog/psutil | 115 项：97 通过、18 跳过，退出码 0 |
+| Python 3.14.8 x64，干净 venv、无 watchdog/psutil | 115 项：97 通过、18 跳过，退出码 0 |
+| Python 3.14.8 x64，独立 venv、watchdog 6.0.0 / psutil 7.2.2 | 115 项：97 通过、18 跳过，退出码 0；pip check 通过 |
+| Python 3.12.0，源码位于 `中文 工作目录` | 全部适用测试通过，97 通过、18 跳过 |
+| Windows 专用测试 | 4 项均执行并通过，无跳过 |
+| 真实控制台 Ctrl+C | 隔离隐藏控制台内发送 Win32 `CTRL_C_EVENT`；native、polling、command 三种模式均输出 `reason: cancelled`、退出码 0；观察 PID 保持存活，命令后代被清理 |
+| 缺失 GPU provider | 退出码 1，仅一个错误事件，GPU 标为 unavailable，无虚假停滞/恢复 |
+| 两个 CLI 的 `--help`、仓库及系统 skill 校验 | 通过 |
+| Windows 真实 NVIDIA GPU / 真实 Codex 空闲会话唤醒 | 未测试；本机无 `nvidia-smi`，未向真实会话投递测试消息 |
+
+所有完整套件使用 `-W error::ResourceWarning`，最终日志未发现资源警告、被忽略异常或线程 traceback。18 项跳过为 14 项 POSIX/Linux 专用和 4 项需显式开启的真实 GPU 测试。3.10.0 / 3.12.0 是前轮保留的官方兼容性测试运行时，不是推荐部署版本。
+
+首次执行在 3.10 / 3.12 复现了 [Ubuntu 提交的 CI 失败](https://github.com/EthenJ/codex-monitor/actions/runs/41211603526)：句柄测试保留最后一个 watcher，却拿它与已释放 watcher 的基线比较。3.12 实测为基线 136、构造对象 140、启动 143、关闭后仍持有对象 140、释放对象 136；再连续 60 次启停并释放对象，每批都保持 136。修正为断言线程退出后释放对象，再比较句柄数，没有放宽泄漏阈值。
+
+本轮新增真实 Ctrl+C 回归测试，使用独立隐藏控制台，避免向测试运行器、用户终端或其他任务发送信号。它补充强制结束监控器的原有 Job 测试。CI 新增无可选依赖的 Windows/Python 3.12 组合，现在共 11 个任务；以 [对应提交的 CI](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) 为准。
+
+本地首次失败和最终日志均保存在 `.tmp-windows-validation-6983e66/logs/`，未加入 Git。以下清单保留为复测步骤。网络共享、Windows 符号链接权限、服务/RDP 宿主、人工终端按键和实际 GPU 驱动故障没有单独执行，不由上述自动测试推断通过。
 
 适用于本次 Ubuntu 适配修改后的源码。请在 **Windows 原生 PowerShell 5.1 或 PowerShell 7** 中执行，不要在 WSL 中执行；WSL 通过不能证明 Win32 文件事件和 Job Object 正常。先完成第 1～4 节，再根据硬件执行第 5 节，最后做第 6 节的交互取消检查。
 
-截至本清单编写时，本轮修改已在 Ubuntu 验证，**新增 Windows 专用测试尚未在真实 Windows 执行**。历史版本的 59 项 Windows 测试通过记录不代表本轮已通过。当前默认测试发现数应为 **114**；此数字用于核对源码是否完整，不应替代逐项检查失败和跳过原因。
+本轮已在真实 Windows 执行，结果见上表。当前默认测试发现数应为 **115**；此数字用于核对源码是否完整，不应替代逐项检查失败和跳过原因。
 
 ## 1. 同步完整源码并记录环境
 
@@ -76,7 +101,7 @@ Get-Content (Join-Path $logs 'suite312-minimal.log') -Tail 12
 "exit=$suiteExit" | Out-File (Join-Path $logs 'suite312-minimal.exit.txt')
 ```
 
-预期：退出码 **0**，`Ran 114 tests`、`OK (skipped=18)`，即 **96 项通过、18 项跳过**。18 项为 4 项需显式启用的真实 GPU 测试，以及 14 项 POSIX/Linux 专用测试。Windows 原生文件/PID/Job 测试不能跳过。若源码后续增减测试，以实际发现数和跳过原因复核。
+预期：退出码 **0**，`Ran 115 tests`、`OK (skipped=18)`，即 **97 项通过、18 项跳过**。18 项为 4 项需显式启用的真实 GPU 测试，以及 14 项 POSIX/Linux 专用测试。Windows 原生文件/PID/Job/Ctrl+C 测试不能跳过。若源码后续增减测试，以实际发现数和跳过原因复核。
 
 再安装可选依赖，验证同一份源码不会因安装依赖改变 Windows 默认后端：
 
@@ -101,7 +126,7 @@ Get-Content (Join-Path $logs 'suite312-platform.log') -Tail 12
 "exit=$suiteExit" | Out-File (Join-Path $logs 'suite312-platform.exit.txt')
 ```
 
-预期：所有检查退出码 0；安装后仍是 96 项通过、18 项跳过。不能只看最后的 `OK`：检查日志中是否有 `ResourceWarning`、`Exception ignored`、线程 traceback 或异常跳过。遇到失败保留第一次日志，不要靠反复重跑后的某一次成功判定通过。
+预期：所有检查退出码 0；安装后仍是 97 项通过、18 项跳过。不能只看最后的 `OK`：检查日志中是否有 `ResourceWarning`、`Exception ignored`、线程 traceback 或异常跳过。遇到失败保留第一次日志，不要靠反复重跑后的某一次成功判定通过。
 
 其他 Python 版本重复第 1 节创建环境和本节命令，把 `py -3.12`、环境名和日志文件名一起改为对应版本，避免覆盖证据。目录名含中文或空格时也应通过；建议至少在一个这样的仓库路径下运行一次完整套件。
 
@@ -116,13 +141,14 @@ Get-Content (Join-Path $logs 'windows-native.log')
 "exit=$nativeExit" | Out-File (Join-Path $logs 'windows-native.exit.txt')
 ```
 
-预期：**3 项全部通过，无跳过**。
+预期：**4 项全部通过，无跳过**。
 
 | 检查 | 预期 |
 | --- | --- |
 | `test_pending_directory_read_releases_handles` | 后端为 `ReadDirectoryChangesW`；无文件变化时连续启动/取消 20 次，监听线程都退出，句柄数量不持续增长。 |
 | `test_observed_pid_returns_actual_windows_exit_code` | 等待一个真实测试进程退出，准确报告退出码 7，注册监听时不改变进程状态。 |
 | `test_forced_monitor_exit_cleans_callback_tree_and_preserves_observed_pid` | 强制结束监控器后，Job 内的 callback 和后代不能继续写入标记；独立的被观察进程仍存活。测试仅创建和结束自己的临时进程。 |
+| `test_real_console_ctrl_c_cleans_owned_work_and_preserves_observed_pid` | 向隔离隐藏控制台发送真实 Ctrl+C，验证 native/polling/command 均正常取消、独立 PID 存活、命令后代被清理。 |
 
 完整套件还必须通过：中文文件创建/修改/重命名/删除、根目录替换报错、原子文件替换、UTF-8 与坏字节输出、回调 stdin JSON、未读取大输入的超时、大输出有界、回调正常结束/超时后的后代清理、NUL 输入失败诊断，以及 `.cmd`/`.bat` 不能作为原生 Codex argv 接收器。
 
@@ -234,7 +260,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $sleeperFile = Join-Path $checkRoot 'observed_process.py'
 [System.IO.File]::WriteAllText($sleeperFile, "import time`ntime.sleep(180)`n", $utf8NoBom)
 $sleeperArgs = '"' + $sleeperFile + '"'
-$observedTest = Start-Process -FilePath $pythonExe -ArgumentList $sleeperArgs -PassThru
+$observedTest = Start-Process -FilePath $pythonExe -ArgumentList $sleeperArgs -PassThru -WindowStyle Hidden
 $observedTest.Id
 $pythonExe
 $logs
@@ -279,7 +305,7 @@ Stop-Process -Id $observedTest.Id -ErrorAction SilentlyContinue
 | Python 版本和位数 | |
 | 无依赖完整套件：发现/通过/跳过/失败/退出码 | |
 | 安装可选依赖后完整套件 | |
-| Windows 专用 3 项：句柄、退出码、Job 清理 | |
+| Windows 专用 4 项：句柄、退出码、Job 清理、真实 Ctrl+C | |
 | 中文/空格路径、原生/轮询事件、Ctrl+C | |
 | GPU 型号、驱动版本、原始 query 输出 | |
 | 真实 GPU 4 项及每个跳过原因 | |

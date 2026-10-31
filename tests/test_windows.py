@@ -5,6 +5,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -46,7 +47,99 @@ class WindowsNativeTests(unittest.TestCase):
                 finally:
                     watcher.close()
                 self.assertFalse(watcher.thread.is_alive(), "pending directory read did not cancel")
+                # Python 3.10/3.12 retain kernel synchronization handles in
+                # the still-live watcher/queue. Match the released warm-up
+                # lifetime before measuring native I/O handle accumulation.
+                del watcher
             self.assertLessEqual(handles(), before + 2, "native directory handles accumulated")
+
+    def test_real_console_ctrl_c_cleans_owned_work_and_preserves_observed_pid(self):
+        # An isolated hidden console keeps the real CTRL_C_EVENT away from
+        # the test runner, the user's terminal and any unrelated processes.
+        with tempfile.TemporaryDirectory(prefix="codex console ") as directory:
+            root = Path(directory)
+            controller = root / "controller.py"
+            controller.write_text(textwrap.dedent('''\
+                import ctypes, json, pathlib, subprocess, sys, time
+                from ctypes import wintypes
+                config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+                api = ctypes.WinDLL("kernel32", use_last_error=True)
+                api.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
+                api.SetConsoleCtrlHandler.restype = wintypes.BOOL
+                api.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
+                api.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
+                process = subprocess.Popen(config["argv"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           text=True, encoding="utf-8")
+                try:
+                    records = []
+                    for line in process.stdout:
+                        record = json.loads(line)
+                        records.append(record)
+                        if record["type"] == "started":
+                            break
+                    else:
+                        raise RuntimeError("monitor exited before registration")
+                    if config.get("ready"):
+                        deadline = time.monotonic() + 5
+                        while not pathlib.Path(config["ready"]).exists():
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError("owned command did not start")
+                            time.sleep(.01)
+                    # Set this only after spawning: the child must not inherit
+                    # the controller's ignore-Ctrl+C attribute.
+                    if not api.SetConsoleCtrlHandler(None, True):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    if not api.GenerateConsoleCtrlEvent(0, 0):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    out, err = process.communicate(timeout=5)
+                    records.extend(json.loads(line) for line in out.splitlines())
+                    print(json.dumps({"returncode": process.returncode, "records": records, "stderr": err}))
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=5)
+                '''), encoding="utf-8")
+            observed = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline()"],
+                                        stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                for mode in ("native", "polling", "command"):
+                    with self.subTest(mode=mode):
+                        config = {"argv": [sys.executable]}
+                        if mode == "command":
+                            ready, leak = root / "source-ready", root / "leaked"
+                            source = root / "source.py"
+                            child = f"import pathlib,time; time.sleep(1.5); pathlib.Path({str(leak)!r}).touch()"
+                            source.write_text("import pathlib,subprocess,sys,time\n"
+                                f"subprocess.Popen([sys.executable,'-c',{child!r}])\n"
+                                f"pathlib.Path({str(ready)!r}).touch()\ntime.sleep(20)\n", encoding="utf-8")
+                            config["ready"] = str(ready)
+                            config["argv"] += [str(SCRIPTS / "monitor_callback.py"), "--command",
+                                               shell_command([sys.executable, str(source)]), "--match", "."]
+                        else:
+                            config["argv"] += [str(SCRIPTS / "watchdog_monitor.py"), "--pid", str(observed.pid),
+                                "--watch-directory", str(root), "--file-backend", mode, "--poll-ms", "20"]
+                        config["argv"] += ["--timeout-ms", "20000", "--codex-thread", "test", "--dry-run"]
+                        config_file = root / "config.json"
+                        config_file.write_text(json.dumps(config), encoding="utf-8")
+                        startup = subprocess.STARTUPINFO()
+                        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        startup.wShowWindow = subprocess.SW_HIDE
+                        result = subprocess.run([sys.executable, str(controller), str(config_file)],
+                            creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup,
+                            capture_output=True, text=True, encoding="utf-8", timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        outcome = json.loads(result.stdout)
+                        self.assertEqual(outcome["returncode"], 0, outcome)
+                        self.assertEqual(outcome["stderr"], "")
+                        self.assertEqual(outcome["records"][-1]["reason"], "cancelled", outcome)
+                        self.assertIsNone(observed.poll(), "Ctrl+C cancellation killed the observed workload")
+                        if mode == "command":
+                            time.sleep(1.8)
+                            self.assertFalse(leak.exists(), "owned descendant survived Ctrl+C")
+            finally:
+                if observed.poll() is None:
+                    observed.kill()
+                observed.communicate(timeout=5)
 
     def test_observed_pid_returns_actual_windows_exit_code(self):
         child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(7)"],
