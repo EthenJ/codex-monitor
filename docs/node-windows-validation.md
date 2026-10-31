@@ -1,6 +1,6 @@
 # Node 插件 Windows 复测清单
 
-适用于 `develop` 的 Node v0.3 预览版；`main` 是部署分支。旧的 [Python Windows 报告](windows-validation.md) 不能证明新版 Node 插件通过。本轮修改已在 Ubuntu 的 Node 22.22.0 / 24.17.0 验证，下面的 Windows 项目仍待实机执行。
+适用于 `develop` 的 Node v0.3 预览版；`main` 是部署分支。旧的 [Python Windows 报告](windows-validation.md) 不能证明新版 Node 插件通过。本轮 Windows 源码回归与隔离发布包安装已验证，具体版本、结果和仍待验证的范围见 [Node 验证报告](node-validation.md)。下面保留复测步骤，真实 GPU 和桌面会话仍需单独验证。
 
 ## 1. 完整测试
 
