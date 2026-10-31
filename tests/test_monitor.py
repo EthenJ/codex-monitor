@@ -297,20 +297,37 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(records[-1]["reason"], "callback_error")
 
-    def test_single_write_coalesces_create_and_modify(self):
+    def test_native_single_file_publication_delivers_callback(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "metrics.json"
-            path.write_text("step=1", encoding="utf-8")
-
-            def write_later():
-                time.sleep(0.4)
-                path.write_text("step=2 with a longer payload", encoding="utf-8")
-
-            threading.Thread(target=write_later, daemon=True).start()
-            code, records = self.run_monitor("--watch-file", str(path), "--timeout-ms", "1500")
+            armed = threading.Event()
+            real_start = FileWatcher.start
+            def start_when_ready(watcher):
+                result = real_start(watcher)
+                armed.set()
+                return result
+            def publish_after_registration():
+                if armed.wait(3):
+                    path.write_text("step=1", encoding="utf-8")
+            worker = threading.Thread(target=publish_after_registration)
+            worker.start()
+            try:
+                with patch.object(FileWatcher, "start", start_when_ready):
+                    code, records = self.run_monitor("--watch-file", str(path), "--timeout-ms", "3000",
+                                                     "--max-events", "1")
+            finally:
+                worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(path.read_text(encoding="utf-8"), "step=1")
         self.assertEqual(code, 0)
         changes = [r for r in records if r.get("type") == "event" and r.get("event_type") == "file_change"]
         self.assertEqual(len(changes), 1, changes)
+        self.assertEqual(changes[0]["path"], str(path))
+        self.assertIn(changes[0]["change"], {"created", "modified"})
+        self.assertEqual(records[-1]["reason"], "max_events")
+        # Debounce semantics have deterministic burst/backlog regressions.
+        # Native backends may replay the pre-registration create or deliver
+        # separate writes more than 500 ms apart; neither implies a bug.
 
     def test_dry_run_never_spawns_codex(self):
         with tempfile.TemporaryDirectory() as directory, \
