@@ -7,10 +7,12 @@ state transitions invoke the callback; GPU samples stay in the local process.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import os
 import queue
+import re
 import select
 import subprocess
 import threading
@@ -20,7 +22,7 @@ from pathlib import Path
 from file_events import EventQueue, FileWatcher
 from monitor_callback import (MAX_EVENT_CHARS, bounded_message, enqueue_codex, emit,
                               invoke_callback_command, now_iso, safe_format, validate_template)
-from owned_process import ProcessCancelled, run_owned
+from owned_process import ProcessCancelled, run_owned, termination_signals
 
 
 class HealthState:
@@ -35,6 +37,8 @@ class HealthState:
         self.recover = gpu_recover if gpu_recover is not None else gpu_threshold
         self.gpu_mode = gpu_mode
         self.low_since = None
+        self.low_by_gpu = {}
+        self.gpu_ids = None
         self.active = {}
         self.alerting = False
         self.unknown = {"gpu_low"} & self.enabled
@@ -44,9 +48,19 @@ class HealthState:
         self.active.pop("file_stalled", None)
 
     def gpu_sample(self, now, values):
+        if not values:
+            self.gpu_unknown()
+            return
         if now < self.armed_at:
             self.low_since = None
+            self.low_by_gpu.clear()
             return
+        if self.gpu_ids is not None and self.gpu_ids != set(values):
+            # A different device set cannot continue the previous evidence.
+            self.gpu_unknown()
+        self.gpu_ids = set(values)
+        self.low_by_gpu = {gpu: self.low_by_gpu.get(gpu, now)
+                           for gpu, value in values.items() if value < self.threshold}
         combine = all if self.gpu_mode == "all" else any
         low = combine(value < self.threshold for value in values.values())
         # Recover above the higher boundary to avoid threshold flapping.
@@ -58,11 +72,14 @@ class HealthState:
             if not low:
                 self.low_since = None
             else:
-                if self.low_since is None:
-                    self.low_since = now
+                # In any mode, the same card must stay low for the dwell.
+                # In all mode, time starts when the last card becomes low.
+                self.low_since = (max if self.gpu_mode == "all" else min)(self.low_by_gpu.values())
                 if now - self.low_since >= self.dwell:
                     self.active["gpu_low"] = {"utilization": values, "threshold": self.threshold,
                                               "duration_ms": int((now - self.low_since) * 1000)}
+        if "gpu_low" in self.active:
+            self.active["gpu_low"]["utilization"] = dict(values)
         if recovered or not self.alerting or "gpu_low" in self.active:
             self.unknown.discard("gpu_low")
 
@@ -70,6 +87,7 @@ class HealthState:
         # Missing/invalid samples break continuous-low evidence; never count
         # provider downtime toward the low-utilization dwell time.
         self.low_since = None
+        self.low_by_gpu.clear()
         self.active.pop("gpu_low", None)
         self.unknown.add("gpu_low")
 
@@ -89,24 +107,49 @@ class HealthState:
         return None
 
 
+def gpu_selectors(gpu_id):
+    selectors = [part.strip() for part in gpu_id.split(",")]
+    if not all(selectors) or ("all" in selectors and selectors != ["all"]):
+        raise ValueError("--gpu-id needs nonempty GPU indices/UUIDs/PCI bus IDs, or all")
+    return selectors
+
+
+def normalize_gpu_id(value):
+    if value.isdecimal():
+        return str(int(value))
+    if re.fullmatch(r"[\da-fA-F]{4,8}:[\da-fA-F]{2}:[\da-fA-F]{2}\.[0-7]", value):
+        domain, bus_device = value.split(":", 1)
+        return f"{int(domain, 16):08x}:{bus_device.lower()}"
+    return value.lower()
+
+
 def gpu_values(gpu_id="0", binary="nvidia-smi", stop=None):
-    argv = [binary, "--query-gpu=index,utilization.gpu", "--format=csv,noheader,nounits"]
-    if gpu_id != "all":
-        argv.append(f"--id={gpu_id}")
+    selectors = gpu_selectors(gpu_id)
+    argv = [binary, "--query-gpu=index,uuid,pci.bus_id,utilization.gpu", "--format=csv,noheader,nounits"]
+    if selectors != ["all"]:
+        argv.append(f"--id={','.join(selectors)}")
     result = run_owned(argv, timeout=10, stop_event=stop)
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout or "nvidia-smi failed").strip())
     values = {}
+    identities = set()
     for row in result.stdout.splitlines():
         parts = [value.strip() for value in row.split(",")]
-        if len(parts) != 2:
+        if len(parts) != 4 or not parts[0].isdecimal() or not all(parts[:3]):
             raise ValueError(f"invalid GPU sample: {row}")
-        value = float(parts[1])
+        if parts[0] in values:
+            raise ValueError(f"duplicate GPU index: {parts[0]}")
+        value = float(parts[3])
         if not math.isfinite(value) or not 0 <= value <= 100:
             raise ValueError(f"invalid GPU utilization: {row}")
         values[parts[0]] = value
+        identities.update(normalize_gpu_id(part) for part in parts[:3])
     if not values:
         raise ValueError("no GPU utilization values returned")
+    if selectors != ["all"]:
+        missing = [gpu for gpu in selectors if normalize_gpu_id(gpu) not in identities]
+        if missing:
+            raise ValueError(f"selected GPUs missing from nvidia-smi response: {', '.join(missing)}")
     return values
 
 
@@ -153,17 +196,26 @@ def process_worker(pid, events, stop, ready):
                         raise c.WinError(c.get_last_error())
             finally:
                 k.CloseHandle(handle)
-        elif hasattr(os, "pidfd_open"):
-            descriptor = os.pidfd_open(pid)
-            try:
-                ready.set()
-                while not stop.is_set():
-                    if select.select([descriptor], [], [], 0.25)[0]:
-                        events.put({"kind": "process_exit", "returncode": None})
-                        return
-            finally:
-                os.close(descriptor)
         else:
+            descriptor = None
+            if hasattr(os, "pidfd_open"):
+                try:
+                    descriptor = os.pidfd_open(pid)
+                except OSError as exc:
+                    # Python can expose pidfd_open on older kernels or in a
+                    # container whose seccomp policy disables the syscall.
+                    if exc.errno not in {errno.ENOSYS, errno.EINVAL, errno.EPERM, errno.EACCES}:
+                        raise
+            if descriptor is not None:
+                try:
+                    ready.set()
+                    while not stop.is_set():
+                        if select.select([descriptor], [], [], 0.25)[0]:
+                            events.put({"kind": "process_exit", "returncode": None})
+                            return
+                finally:
+                    os.close(descriptor)
+                return
             import psutil
             proc = psutil.Process(pid)
             ready.set()
@@ -194,7 +246,7 @@ def build_parser():
     p.add_argument("--gpu-recover-above", type=float, help="Recovery boundary; defaults to the low threshold")
     p.add_argument("--gpu-below-for-ms", type=int, default=120000)
     p.add_argument("--gpu-sample-ms", type=int, default=10000)
-    p.add_argument("--gpu-id", default="0", help="Physical index/UUID, comma-separated list, or all")
+    p.add_argument("--gpu-id", default="0", help="Physical index/UUID/PCI bus ID, comma-separated list, or all")
     p.add_argument("--gpu-match", choices=("all", "any"), default="all")
     p.add_argument("--nvidia-smi", default="nvidia-smi", help="Executable path")
     p.add_argument("--pid", type=int, help="Observe an already-running training process; never kill it")
@@ -233,6 +285,10 @@ def validate(args, parser):
     if args.stalled_for_ms is not None and not (args.watch_file or args.watch_directory):
         parser.error("--stalled-for-ms needs --watch-file or --watch-directory")
     if args.gpu_util_below is not None:
+        try:
+            gpu_selectors(args.gpu_id)
+        except ValueError as exc:
+            parser.error(str(exc))
         if not 0 <= args.gpu_util_below <= 100:
             parser.error("GPU threshold must be between 0 and 100")
         if args.gpu_recover_above is not None and not args.gpu_util_below <= args.gpu_recover_above <= 100:
@@ -322,7 +378,8 @@ def run(args):
         if args.watch_file or args.watch_directory:
             watcher = FileWatcher(args.watch_file or args.watch_directory, bool(args.watch_file), events,
                                   recursive=args.recursive, pattern=args.pattern, backend=args.file_backend,
-                                  poll_ms=args.poll_ms).start()
+                                  poll_ms=args.poll_ms)
+            watcher.start()
             log("backend", backend=watcher.backend, poll_ms=args.poll_ms if watcher.backend == "snapshot-fallback" else None)
         if args.pid:
             ready = threading.Event()
@@ -392,12 +449,24 @@ def run(args):
         dispatch("monitor_error", {"error": str(exc), "status": "unknown"})
     finally:
         stop.set()
+        cleanup_errors = []
         if watcher:
-            watcher.close()
+            try:
+                watcher.close()
+            except Exception as exc:
+                cleanup_errors.append(f"file watcher cleanup: {exc}")
         for worker in workers:
-            worker.join(timeout=11)
+            try:
+                if worker.ident is not None:
+                    worker.join(timeout=11)
+                    if worker.is_alive():
+                        raise RuntimeError("worker did not stop")
+            except Exception as exc:
+                cleanup_errors.append(f"worker cleanup: {exc}")
+        if cleanup_errors:
+            errors = True
         log("stopped", reason=reason, matched=count, active_conditions=health.active,
-            unavailable_sensors=list(sensor_errors))
+            unavailable_sensors=list(sensor_errors), **({"cleanup_errors": cleanup_errors} if cleanup_errors else {}))
     return 1 if errors or sensor_errors else 0
 
 
@@ -405,7 +474,8 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     validate(args, parser)
-    return run(args)
+    with termination_signals():
+        return run(args)
 
 
 if __name__ == "__main__":

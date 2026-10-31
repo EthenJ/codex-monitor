@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from owned_process import run_owned, start_owned, stop_owned
+from owned_process import run_owned, start_owned, stop_owned, termination_signals
 
 
 DEFAULT_TIMEOUT_MS = 300_000
@@ -174,7 +174,7 @@ def enqueue_codex(
         return True, shlex.join(argv)
     try:
         result = run_owned(argv, cwd=cwd, timeout=timeout)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     output = (result.stdout or "").strip()
     if result.returncode != 0:
@@ -205,7 +205,7 @@ def invoke_callback_command(
             input=json.dumps(payload, ensure_ascii=True),
             timeout=timeout,
         )
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     output = (result.stdout or "").strip()
     if result.returncode != 0:
@@ -270,10 +270,22 @@ def validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple
 
 def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
     proc = start_process(args.command, args.cwd, args.encoding)
+    try:
+        return observe_command(args, thread, pattern, proc)
+    finally:
+        # Covers cancellation/resource failures before the reader is created.
+        terminate_process(proc)
+        reader = getattr(proc, "monitor_reader", None)
+        if reader is None or not reader.is_alive():
+            proc.stdout.close()
+
+
+def observe_command(args, thread, pattern, proc):
     started = time.monotonic()
     output: queue.Queue[tuple[str, str | None]] = queue.Queue(maxsize=256)
     stop = threading.Event()
     reader = threading.Thread(target=stream_lines, args=(proc, output, stop, pattern), daemon=True)
+    proc.monitor_reader = reader
 
     matched = 0
     last_event: str | None = None
@@ -285,16 +297,19 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
         reader.start()
         emit(event_record("started", source=args.source, command=args.command, pid=proc.pid))
         while True:
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            if elapsed_ms >= args.timeout_ms:
+            remaining = args.timeout_ms / 1000 - (time.monotonic() - started)
+            if remaining <= 0:
                 exit_reason = "deadline"
                 break
             try:
-                kind, line = output.get(timeout=0.25)
+                kind, line = output.get(timeout=min(0.25, remaining))
             except queue.Empty:
                 if saw_eof and proc.poll() is not None:
                     break
                 continue
+            if time.monotonic() - started >= args.timeout_ms / 1000:
+                exit_reason = "deadline"
+                break
             if kind == "error":
                 exit_reason = "monitor_error"
                 emit(event_record("monitor_error", source=args.source, command=args.command,
@@ -303,7 +318,7 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
             if kind == "eof":
                 saw_eof = True
                 try:
-                    proc.wait(timeout=0.2)
+                    proc.wait(timeout=min(0.2, max(0, args.timeout_ms / 1000 - (time.monotonic() - started))))
                 except subprocess.TimeoutExpired:
                     # A child may close its current stream before it exits.
                     # Keep the monitor alive until the process actually ends.
@@ -413,7 +428,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     thread, pattern = validate(args, parser)
-    return run(args, thread, pattern)
+    with termination_signals():
+        return run(args, thread, pattern)
 
 
 if __name__ == "__main__":

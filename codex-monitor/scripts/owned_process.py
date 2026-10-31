@@ -8,11 +8,31 @@ import tempfile
 import threading
 import time
 from collections import deque
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 
 
 class ProcessCancelled(RuntimeError):
     pass
+
+
+@contextmanager
+def termination_signals():
+    """Give POSIX SIGTERM the same cleanup path as interactive cancellation."""
+    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def cancel(signum, frame):
+        # A second stop request must not interrupt resource cleanup.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, cancel)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 class WindowsJob:
@@ -119,9 +139,14 @@ def start_owned(command, *, shell=False, cwd=None, **kwargs):
     except BaseException:
         if job:
             job.close()
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=3)
+        if process is not None:
+            # Startup can be interrupted after Popen but before returning the
+            # process to its owner. Clean the group even if the leader exited.
+            if os.name != "nt":
+                stop_owned(process)
+            elif process.poll() is None:
+                process.kill()
+                process.wait(timeout=3)
         raise
 
 
@@ -165,6 +190,11 @@ def run_owned(command, *, shell=False, cwd=None, input=None, timeout=30, stop_ev
         process = start_owned(command, shell=shell, cwd=cwd,
                               stdin=input_source,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        reader = None
+        # Also cover failure while constructing the output reader, before its
+        # explicit finally block is armed. Stack order stops before closing.
+        resources.callback(lambda: process.stdout.close() if reader is None else None)
+        resources.callback(stop_owned, process)
         chunks = deque(maxlen=16)
         read_errors = []
         def drain_output():

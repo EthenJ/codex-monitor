@@ -14,7 +14,7 @@ The repository is the Codex counterpart of Claude Code's **Monitor tool**, and i
 
 Naming note: this tool monitors **your workload** - command output, files, training health, GPU, a PID - and wakes Codex when something happens. It does not inspect or supervise the Codex session itself; the session is the *destination* of the callback, not the thing being observed.
 
-**Tested locally on Windows.** CI covers Windows, Ubuntu, and macOS; see [Platform status](#platform-status) and the commit-specific workflow results for the tested revision.
+**Tested locally on Windows and Ubuntu, including live NVIDIA GPUs on Ubuntu.** CI covers Windows, Ubuntu, and macOS; see [Platform status](#platform-status) and the commit-specific workflow results for the tested revision.
 
 ## Features
 
@@ -41,9 +41,29 @@ Optional dependencies:
 python -m pip install -e ".[platform]"
 ```
 
-`watchdog` enables native file events on Linux/macOS. `psutil` is used as the PID-wait fallback on platforms without `pidfd_open`. Windows uses native APIs and does not need either package for the default path. The editable install ships no importable package (`packages = []`); it exists to resolve the optional dependencies for the scripts in `codex-monitor/scripts`.
+`watchdog` enables native file events on Linux/macOS. `psutil` is used as the PID-wait fallback when `pidfd_open` is unavailable or blocked by the kernel/container. Windows uses native APIs and does not need either package for the default path. The editable install ships no importable package (`packages = []`); it exists to resolve the optional dependencies for the scripts in `codex-monitor/scripts`.
 
 ## Install the skill
+
+On Ubuntu, first create a project environment with native file-event support:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[platform]'
+python -W error::ResourceWarning -m unittest discover -s tests -v
+```
+
+Run the scripts with this environment's Python. For a read-only GPU check that prints callback commands locally:
+
+```bash
+python codex-monitor/scripts/watchdog_monitor.py \
+  --gpu-id all --gpu-match any --gpu-util-below 10 \
+  --gpu-below-for-ms 2000 --gpu-sample-ms 500 \
+  --timeout-ms 10000 --codex-thread gpu-check --dry-run
+```
+
+Only a threshold transition or sensor failure produces an event. Use the opt-in live tests below to check sampling even while every card is busy.
 
 Copy the `codex-monitor` directory into the Codex skill directory:
 
@@ -85,6 +105,8 @@ python .\codex-monitor\scripts\watchdog_monitor.py `
 ```
 
 The watcher is armed before the `started` event is emitted. On Windows the backend is `ReadDirectoryChangesW`; on other platforms the JSONL `backend` record identifies `watchdog` or `snapshot-fallback`.
+
+Directory symlinks are resolved when the subscription is armed, and callback paths retain the registered alias. A monitored file that is itself a symlink uses snapshot fallback in auto mode; explicit native mode requires its target path or `--file-backend polling`. A native file becoming a symlink fails explicitly. Snapshot enumeration reports inaccessible directories as sensor errors rather than deletions.
 
 Debouncing uses observation times to suppress repeated modifications (including create-then-modify noise) for a path, so draining a callback backlog does not collapse writes that happened seconds apart. Deletes, renames, and recreation remain distinct events. Replacing or renaming the watched root is a fatal sensor error; re-register the watcher for its new location. A create/modify notification does not prove a checkpoint is complete; prefer a producer's completion event or atomic rename into a final filename before loading the artifact.
 
@@ -135,18 +157,30 @@ python .\codex-monitor\scripts\watchdog_monitor.py --help
 
 ### Platform status
 
+On a host with NVIDIA GPUs, also run the read-only hardware checks:
+
+```bash
+CODEX_MONITOR_TEST_GPU=1 .venv/bin/python -W error::ResourceWarning \
+  -m unittest discover -s tests -p test_live_gpu.py -v
+```
+
+These query actual indices, UUIDs and PCI addresses, reject a partially missing GPU selection, exercise dry-run sampling, and deliver a real low-utilization event to a temporary local callback. The last check skips if every GPU remains at 100% throughout its observation window. They do not start GPU workloads or change driver settings.
+
 | Platform | Status |
 | --- | --- |
 | Windows 11 Pro for Workstations 26H2 (build 26300) | **Tested locally.** All 59 tests pass on Python 3.10.0, 3.12.0, and 3.14.8. Codex CLI 0.166.0. |
-| Windows / Ubuntu / macOS CI | Nine jobs cover Python 3.10, 3.12, and 3.14 on all three platforms, with native file backends and PID waiting. See [workflow results](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) for each revision. |
-| Live NVIDIA GPU | **Not tested.** `nvidia-smi` is unavailable here; GPU alert, recovery, hysteresis, and `all`/`any` behavior were exercised with deterministic mocks. |
+| Ubuntu 24.04.3 LTS, x86_64 | **Tested locally.** Python 3.10, 3.12, 3.13 and 3.14; native inotify, snapshot fallback, symlink paths, atomic file replacement, PID waiting and SIGTERM cleanup. See the validation report for exact runtimes and results. |
+| Windows / Ubuntu / macOS CI | Nine jobs cover Python 3.10, 3.12, and 3.14 on all three platforms, with native file backends and PID waiting; an additional Ubuntu job omits optional dependencies. See [workflow results](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml) for each revision. |
+| Live NVIDIA GPU | **Tested on Ubuntu with two GeForce RTX 4090 D cards.** Real selection, sampling, dry-run and low-utilization callback passed. Recovery, hysteresis, outages and multi-card dwell boundaries also have deterministic tests. |
 | Live Codex wake-up | **Not verified end to end.** Tests validate callback payloads, CLI argv, and failure/warning handling; they do not prove that a real idle thread executes a follow-up turn. |
 
 What the Windows run covered: native `ReadDirectoryChangesW` create/modify/rename/delete notifications, root replacement detection, single-file watching that did not exist at registration, file-stall and recovery transitions, atomic replacement re-arming, Chinese output and callback JSON, backlog-aware write debouncing that preserves deletion/recreation, `--dry-run` on an actual triggered event, simulated GPU health and sensor outages, PID exit, failed callbacks, unread callback input, warning diagnostics, bounded queues/messages, subscription timing, callback child cleanup, startup log failure cleanup, and the invariant that watchdog expiry, event limits, and cancellation leave the observed training PID running.
 
 The [validation report](docs/validation.md) records the audit findings, commands, platform boundaries, cancellation tests, and the distinction between callback transport tests and a live Codex turn.
 
-Before relying on a live GPU rule, validate it locally with `--dry-run` on the target machine. Before relying on Linux/macOS native file events, let the CI matrix (or a local run with `pip install -e ".[platform]"`) exercise that backend.
+For verification of these changes on a Windows machine, use the [Windows validation checklist (中文)](docs/windows-validation.md). It includes PowerShell commands, expected test/skip counts, native handle and Job Object checks, live GPU checks, and a results template.
+
+Before relying on a GPU rule, validate the workload's thresholds locally with `--dry-run`. Install the optional platform dependencies to use native Linux/macOS file events; the backend is reported in the JSONL log. POSIX `SIGTERM` and Ctrl+C clean up owned commands, callbacks and GPU queries while preserving an observed training PID.
 
 ## Limitations
 
@@ -174,8 +208,13 @@ tests/test_monitor.py
 tests/test_regressions.py
 tests/test_second_review.py
 tests/test_release_review.py
+tests/test_ubuntu_gpu.py
+tests/test_live_gpu.py
+tests/test_boundary_review.py
+tests/test_windows.py
 tools/validate_skill.py
 docs/validation.md
+docs/windows-validation.md
 ```
 
 The design notes in `references/` explain the Claude Code naming, Codex queue/resume behavior, Agents API continuation mapping, watchdog state machine, and platform dependencies.

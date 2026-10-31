@@ -104,12 +104,14 @@ class HealthTests(unittest.TestCase):
 
 class GpuTests(unittest.TestCase):
     def test_gpu_all_omits_invalid_all_selector(self):
-        with patch("watchdog_monitor.run_owned", return_value=subprocess.CompletedProcess([], 0, "0, 5\n1, 80\n", "")) as run:
+        with patch("watchdog_monitor.run_owned", return_value=subprocess.CompletedProcess(
+                [], 0, "0, GPU-first, 00000000:01:00.0, 5\n1, GPU-second, 00000000:02:00.0, 80\n", "")) as run:
             self.assertEqual(gpu_values("all"), {"0": 5.0, "1": 80.0})
             self.assertFalse(any(arg.startswith("--id=") for arg in run.call_args.args[0]))
 
     def test_invalid_metrics_are_unknown_not_zero(self):
-        for raw in ["0, N/A", "0, nan", "0, 200", "", "invalid"]:
+        for raw in ["0, GPU-first, 00000000:01:00.0, N/A", "0, GPU-first, 00000000:01:00.0, nan",
+                    "0, GPU-first, 00000000:01:00.0, 200", "", "invalid"]:
             with self.subTest(raw=raw), patch("watchdog_monitor.run_owned", return_value=subprocess.CompletedProcess([], 0, raw, "")):
                 with self.assertRaises(ValueError):
                     gpu_values()

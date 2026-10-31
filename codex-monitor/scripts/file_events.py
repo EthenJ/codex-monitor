@@ -42,23 +42,38 @@ class FileWatcher:
     def start(self):
         root_stat = self.root.stat()
         self.root_identity = (root_stat.st_dev, root_stat.st_ino)
+        # Resolve at registration, rather than construction: the caller may
+        # have changed a directory alias before arming the watcher.
+        self.resolved_root = self.root.resolve()
+        resolved_stat = self.resolved_root.stat()
+        if (resolved_stat.st_dev, resolved_stat.st_ino) != self.root_identity:
+            raise RuntimeError(f"watched root changed during registration: {self.root}")
         self.thread.start()
-        if not self.ready.wait(10):
+        try:
+            if not self.ready.wait(10):
+                raise RuntimeError("file watcher did not become ready")
+            if self.error:
+                raise RuntimeError(str(self.error))
+        except BaseException:
             self.close()
-            raise RuntimeError("file watcher did not become ready")
-        if self.error:
-            self.close()
-            raise RuntimeError(str(self.error))
+            raise
         return self
 
     def close(self):
         self.stop.set()
+        try:
+            if self.thread.ident is not None:
+                self.thread.join(timeout=3)
+        finally:
+            self._close_observer()
+
+    def _close_observer(self):
         if self.observer:
-            self.observer.stop()
-            if self.observer.ident is not None:
-                self.observer.join(timeout=3)
-        if self.thread.ident is not None:
-            self.thread.join(timeout=3)
+            try:
+                self.observer.stop()
+            finally:
+                if self.observer.ident is not None:
+                    self.observer.join(timeout=3)
 
     def _emit(self, change, path):
         path = Path(os.path.abspath(path))
@@ -90,10 +105,19 @@ class FileWatcher:
         root_stat = self.root.stat()
         if not S_ISDIR(root_stat.st_mode) or (root_stat.st_dev, root_stat.st_ino) != self.root_identity:
             raise RuntimeError(f"watched root was replaced: {self.root}")
+        if self.is_file and self.backend != "snapshot-fallback" and self.path.is_symlink():
+            raise RuntimeError("watched file became a symlink; re-register with --file-backend polling")
 
     def _run(self):
         try:
-            if self.backend != "polling" and os.name == "nt":
+            # Native directory notifications do not follow a symlink's leaf
+            # target. Poll the registered file so writes/retargets stay visible.
+            if self.is_file and self.path.is_symlink() and self.backend != "polling":
+                if self.backend == "native":
+                    raise RuntimeError("native file events cannot follow a file symlink; use --file-backend polling or its target path")
+                self.backend = "snapshot-fallback"
+                self._snapshots()
+            elif self.backend != "polling" and os.name == "nt":
                 self.backend = "ReadDirectoryChangesW"
                 self._windows()
             elif self.backend != "polling":
@@ -113,7 +137,17 @@ class FileWatcher:
                 self.events.put({"kind": "sensor_error", "sensor": "file", "fatal": True,
                                  "error": str(exc)})
         finally:
-            self.ready.set()
+            try:
+                # The owner may cancel before the observer even exists.
+                # The worker also owns cleanup so a late startup cannot leak.
+                self._close_observer()
+            except Exception as exc:
+                self.error = self.error or exc
+                if not self.stop.is_set():
+                    self.events.put({"kind": "sensor_error", "sensor": "file", "fatal": True,
+                                     "error": f"file backend cleanup: {exc}"})
+            finally:
+                self.ready.set()
 
     def _watchdog(self):
         from watchdog.events import FileSystemEventHandler
@@ -134,9 +168,12 @@ class FileWatcher:
                                         "error": str(exc)})
 
         self.observer = Observer()
-        self.observer.schedule(Handler(), str(self.root), recursive=self.recursive)
+        # Linux inotify watches the symlink itself with watchdog's default
+        # flags. Subscribe to its target, then map paths back in _emit().
+        self.observer.schedule(Handler(), str(self.resolved_root), recursive=self.recursive)
         self.observer.start()
         self.backend = "watchdog"
+        self._check_root()
         self.ready.set()
         while not self.stop.wait(0.25):
             self._check_root()
@@ -146,14 +183,37 @@ class FileWatcher:
 
     def _snapshot(self):
         self._check_root()
-        paths = [self.path] if self.is_file else (self.path.rglob("*") if self.recursive else self.path.glob("*"))
         result = {}
-        for path in paths:
+        if self.is_file:
             try:
-                stat = path.stat()
-                result[str(path)] = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+                stat = self.path.stat()
+                result[str(self.path)] = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
             except FileNotFoundError:
-                continue
+                pass
+            return result
+        pending = [self.path]
+        while pending and not self.stop.is_set():
+            directory = pending.pop()
+            try:
+                # pathlib glob/rglob suppress directory read errors on some
+                # Python versions, falsely presenting inaccessible files as
+                # deleted. Scandir preserves permission/I/O diagnostics.
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if self.stop.is_set():
+                            break
+                        try:
+                            stat = entry.stat()
+                            result[entry.path] = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+                            if self.recursive and entry.is_dir(follow_symlinks=False):
+                                pending.append(Path(entry.path))
+                        except FileNotFoundError:
+                            continue
+            except (FileNotFoundError, NotADirectoryError):
+                # A child can disappear during enumeration. Root identity is
+                # mandatory and will also be checked at the next snapshot.
+                if directory == self.root:
+                    raise
         return result
 
     def _snapshots(self):
@@ -161,6 +221,8 @@ class FileWatcher:
         self.ready.set()
         while not self.stop.wait(self.poll_ms / 1000):
             after = self._snapshot()
+            if self.stop.is_set():
+                return
             for key in before.keys() | after.keys():
                 if key not in before:
                     self._emit("created", key)
