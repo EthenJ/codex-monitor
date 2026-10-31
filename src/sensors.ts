@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { capture, owned, Owned } from './processes.js';
 import { observeWindowsPid } from './windows.js';
 import { Health, parseGpu } from './health.js';
+import { FileObservations } from './file-observations.js';
 import { Json, integer, text, within, bounded } from './common.js';
 
 export function validateOptions(kind: string, raw: Json, stateDirectory: string): Json {
@@ -124,18 +125,31 @@ export function startSensor(kind: string, options: Json, emit: (event: Json) => 
         if (stopped) throw Error('Monitor cancelled during registration');
         // Parent subscription handles a file absent at registration and atomic replacement.
         const last = new Map<string, number>();
+        const observations = new FileObservations();
+        addCleanup(() => observations.clear());
+        const selectedPath = (observed: string) => {
+          const alias = path.join(rootAlias, path.relative(root, observed));
+          if (o.watch_file && path.resolve(alias) !== target) return undefined;
+          const relative = path.relative(rootAlias, alias);
+          if (o.pattern && !path.matchesGlob(relative, o.pattern) && !path.matchesGlob(path.basename(alias), o.pattern)) return undefined;
+          return alias;
+        };
         watcher = chokidar.watch(root, { ignoreInitial: true, followSymlinks: false, atomic: false,
           depth: o.watch_file || !o.recursive ? 0 : undefined, backend: o.file_backend,
+          // The public filter receives initial scan stats even with ignoreInitial.
+          // Keep that baseline to reject delayed startup echoes without a sleep.
+          ignored: (observed, stats) => {
+            if (!ready && stats?.isFile() && selectedPath(observed)) observations.remember(observed, stats);
+            return false;
+          },
           pollingInterval: o.poll_ms, ignorePermissionErrors: false });
         const registered = watcher;
         addCleanup(() => registered.close());
         watcher.on('error', fail);
-        watcher.on('all', (change, observed) => {
+        watcher.on('all', (change, observed, stats) => {
           if (!ready || stopped) return;
-          const alias = path.join(rootAlias, path.relative(root, observed));
-          if (o.watch_file && path.resolve(alias) !== target) return;
-          const relative = path.relative(rootAlias, alias);
-          if (o.pattern && !path.matchesGlob(relative, o.pattern) && !path.matchesGlob(path.basename(alias), o.pattern)) return;
+          const alias = selectedPath(observed);
+          if (!alias || !observations.accept(change, observed, stats)) return;
           const at = performance.now();
           // Every observed write is progress, even when its notification is
           // debounced. Deletion and directory churn do not prove progress.

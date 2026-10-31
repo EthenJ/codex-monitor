@@ -30,7 +30,7 @@ node --test --test-timeout=25000 @testFiles 2>&1 | Tee-Object (Join-Path $logDir
 if ($LASTEXITCODE -ne 0) { throw '测试失败，请保留完整日志' }
 ```
 
-当前应发现 **69 项：65 通过、4 项跳过**；跳过的是一项真实 GPU 测试和三项 POSIX 模拟 GPU provider 测试。两个 Windows 专用 Job Object 测试必须执行。原生 App Server 测试使用临时 Codex 配置和本地模拟服务，不使用账号或付费模型。分别在常用 Node 24 和最低支持的 22.22.0 上复测；记录实际版本，不把未执行的平台记为通过。
+当前应发现 **74 项：70 通过、4 项跳过**；跳过的是一项真实 GPU 测试和三项 POSIX 模拟 GPU provider 测试。两个 Windows 专用 Job Object 测试必须执行。原生 App Server 测试使用临时 Codex 配置和本地模拟服务，不使用账号或付费模型。分别在常用 Node 24 和最低支持的 22.22.0 上复测；记录实际版本，不把未执行的平台记为通过。
 
 ## 2. 本轮重点
 
@@ -54,7 +54,7 @@ node --test --test-timeout=25000 @testFiles 2>&1 | Tee-Object (Join-Path $logDir
 if ($LASTEXITCODE -ne 0) { throw 'GPU/完整测试失败' }
 ```
 
-应为 **69 项：66 通过，三项 POSIX 模拟 provider 测试跳过**。该硬件测试只读取指标，检查索引/UUID/PCI/多卡选择、无效 UUID 和有限期限内连续采样；不制造负载或停止现有训练。没有 NVIDIA 硬件时保留 GPU 跳过，并记录原因。
+应为 **74 项：71 通过，三项 POSIX 模拟 provider 测试跳过**。该硬件测试只读取指标，检查索引/UUID/PCI/多卡选择、无效 UUID 和有限期限内连续采样；不制造负载或停止现有训练。没有 NVIDIA 硬件时保留 GPU 跳过，并记录原因。
 
 在可控制的独立训练任务中，再人工观察一次持续低利用率触发和恢复，核对 dwell、warmup、`all`/`any` 和 hysteresis。自动实机测试不证明这些硬件转换场景通过，也不证明驱动失效、远程共享路径或分布式训练适配。
 

@@ -61,7 +61,7 @@ Every tool requires the exact caller thread UUID. Per-thread state lives under `
 
 File options: `watch_file` or `watch_directory`, `recursive`, `pattern`, `file_backend` (`auto`, `native`, `polling`), `poll_ms`, `stalled_for_ms`. Paths resolve against absolute `cwd`. Chokidar uses native events by default; polling is explicit. Parent subscriptions handle atomic replacement and initially missing files. Root replacement or permission errors are failures. File symlinks require the target path; recursive traversal does not follow directory symlinks.
 
-`cwd` must be a directory; an existing `watch_file` must be a regular file. Every observed file write resets inactivity even if its notification is debounced. Deletion and directory churn do not establish progress.
+`cwd` must be a directory; an existing `watch_file` must be a regular file. File identity, size and timestamps are reconciled against the initial scan and previous observations, so unchanged startup/backend echoes do not create events or reset inactivity. Every observed file-version change resets inactivity even if its notification is debounced. Deletion and directory churn do not establish progress. This uses filesystem metadata rather than content hashing.
 
 GPU options: `gpu_id` (indices, UUIDs, PCI IDs, or `all`), `gpu_match` (`all`/`any`), `gpu_util_below`, `gpu_recover_above`, `gpu_below_for_ms`, `gpu_sample_ms`, `nvidia_smi`. Invalid/missing samples are unknown, never zero; they reset dwell evidence. In `any` mode the same card must remain low. `dead_if` combines file/GPU rules. Recovery events require `report_recovery: true` and `watchdog_recovered` in `notify_on`.
 

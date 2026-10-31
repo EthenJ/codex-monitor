@@ -2,6 +2,14 @@
 
 Validation date: 2026-11-01. This preview is developed on `develop`. Deployment `main` and the published v0.1 release are unchanged. The [Python v0.2 report](plugin-validation.md) is historical and does not establish Node compatibility.
 
+## File observation reconciliation after the Ubuntu review
+
+The [CI run for 9058a75](https://github.com/EthenJ/codex-monitor/actions/runs/41232085391) exposed directory-listening failures on Windows and macOS; Ubuntu passed. Windows polling compared initial bigint file statistics with later number statistics and emitted a modification for an unchanged existing file. macOS native callbacks also failed the initial-file assertion. These notifications could incorrectly reset training inactivity.
+
+The sensor now records the initial selected-file versions from Chokidar's public scan filter and reconciles subsequent notifications before updating health or notification debounce. File identity, size, mode, mtime and ctime use consistent numeric representations, retaining sub-millisecond timestamps. Unchanged versions are suppressed; observed writes, atomic replacements, deletion and recreation remain observable. This adds no startup sleep or extra filesystem polling. Version history is cleared on deletion and shutdown. It compares metadata, not file contents; a filesystem that exposes no metadata change cannot establish a new write.
+
+Windows build 26300, Node 24.22.0 and Codex 0.166.0 passed **74 tests: 70 passed, four expected skips, zero failures**, with native host tests enabled. The skips are the physical GPU test and three POSIX GPU-provider fixtures. Five additional regression cases cover mixed stat representations, quiet initial files and immediate post-readiness create/write/replace/delete/recreate behavior on both native and polling backends. Cross-platform CI for this follow-up is pending.
+
 ## Local Docker and native GPU delivery follow-up
 
 Docker was installed on the Ubuntu host for this follow-up: Engine/client 29.1.3, Buildx 0.30.1, containerd 2.2.1, cgroup v2 and overlayfs. The working tree is still based on `develop` commit `7be4880`, with the fixes and new tests described here. Both images built and ran successfully via `tools/validate-docker.sh`:

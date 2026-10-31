@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, rename, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import { ensureService, rpc } from '../../codex-monitor/runtime/service.js';
 import { startSensor, validateOptions } from '../../codex-monitor/runtime/sensors.js';
 import { Health, parseGpu } from '../../codex-monitor/runtime/health.js';
 import { capture } from '../../codex-monitor/runtime/processes.js';
+import { FileObservations } from '../../codex-monitor/runtime/file-observations.js';
 
 async function eventually(check, timeout = 3000) {
   const deadline = Date.now() + timeout;
@@ -214,8 +215,76 @@ for (const backend of ['native', 'polling']) {
       if (recursive) await eventually(() => events.some(e => e.path === path.join(work, 'nested', 'deep.ckpt')));
       else await delay(120);
       assert.equal(events.some(e => e.path?.endsWith('deep.ckpt')), recursive);
-      assert.equal(events.some(e => e.path?.endsWith('ignored.txt') || e.path?.endsWith('existing.ckpt')), false);
+      assert.equal(events.some(e => e.path?.endsWith('ignored.txt') || e.path?.endsWith('existing.ckpt')), false, JSON.stringify(events));
       assert.equal(events.some(e => e.event_type === 'monitor_error'), false);
     });
   }
+}
+
+test('the same file in bigint and number stats is not a new observation', async t => {
+  const { root } = await fixture(t), file = path.join(root, 'metrics');
+  await writeFile(file, 'old');
+  const observations = new FileObservations();
+  observations.remember(file, await stat(file, { bigint: true }));
+  assert.equal(observations.accept('change', file, await stat(file)), false);
+  assert.equal(observations.accept('add', file, await stat(file, { bigint: true })), false);
+  // Replacing an entry is observable even with equal size and preserved mtime.
+  const original = await stat(file), replacement = path.join(root, 'replacement');
+  await writeFile(replacement, 'new');
+  await utimes(replacement, original.atime, original.mtime);
+  await rename(replacement, file);
+  assert.equal(observations.accept('change', file, await stat(file)), true);
+  assert.equal(observations.accept('change', file, await stat(file, { bigint: true })), false);
+});
+
+for (const backend of ['native', 'polling']) {
+  test(`${backend} startup echoes never reset training inactivity`, async t => {
+    const { root, cleanups } = await fixture(t), file = path.join(root, 'metrics'), events = [], progress = [];
+    await writeFile(file, 'old');
+    const original = Health.prototype.progress;
+    t.mock.method(Health.prototype, 'progress', function(at) { progress.push(at); return original.call(this, at); });
+    const sensor = startSensor('watchdog', validateOptions('watchdog', {
+      cwd: root, watch_file: file, file_backend: backend, poll_ms: 20, timeout_ms: 5000,
+      stalled_for_ms: 200, debounce_ms: 0,
+    }, path.join(root, 'state')), event => events.push(event), () => {});
+    cleanups.push(() => sensor.stop()); await sensor.ready;
+    await eventually(() => events.some(e => e.event_type === 'watchdog_stalled'));
+    assert.deepEqual(progress, [], JSON.stringify(events));
+    assert.equal(events.some(e => e.event_type === 'file_change'), false, JSON.stringify(events));
+    // Equal-length writes still count as progress and reach the user.
+    await writeFile(file, 'new');
+    await eventually(() => progress.length > 0 && events.some(e => e.event_type === 'file_change'));
+  });
+
+  test(`${backend} ready accepts immediate nested creates, rewrites and replacements`, async t => {
+    const { root, cleanups } = await fixture(t);
+    // Exercise the first subscription tick, which previously raced a directory rescan.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const work = path.join(root, String(attempt)), nested = path.join(work, 'nested'), events = [];
+      await mkdir(nested, { recursive: true });
+      const existing = path.join(work, 'existing.ckpt'), created = path.join(nested, 'new.ckpt');
+      await writeFile(existing, 'old');
+      const sensor = startSensor('watchdog', validateOptions('watchdog', {
+        cwd: root, watch_directory: work, recursive: true, pattern: '*.ckpt', file_backend: backend,
+        poll_ms: 20, timeout_ms: 10000, debounce_ms: 0,
+      }, path.join(root, 'state')), event => events.push(event), () => {});
+      cleanups.push(() => sensor.stop()); await sensor.ready;
+      await writeFile(created, 'created');
+      await writeFile(existing, 'new');
+      try {
+        await eventually(() => [created, existing].every(file => events.some(e => e.path === file)));
+        events.length = 0;
+        const replacement = path.join(work, 'replacement');
+        await writeFile(replacement, 'replacement'); await rename(replacement, existing);
+        await eventually(() => events.some(e => e.path === existing && ['created', 'modified'].includes(e.change)));
+        events.length = 0;
+        await rm(existing);
+        await eventually(() => events.some(e => e.path === existing && e.change === 'deleted'));
+        events.length = 0;
+        await writeFile(existing, 'new');
+        await eventually(() => events.some(e => e.path === existing && e.change === 'created'));
+      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events })); throw error; }
+      finally { await sensor.stop(); }
+    }
+  });
 }
