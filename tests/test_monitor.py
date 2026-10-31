@@ -274,7 +274,9 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(len(progress_times), 1, "replacement must count as progress; deletion must not")
             self.assertTrue(deleted_at, "the test must delete the replaced file")
-            self.assertLess(progress_times[0], deleted_at[0])
+            # Older Windows Python versions use a coarse monotonic clock: two
+            # ordered operations may have equal timestamps within one tick.
+            self.assertLessEqual(progress_times[0], deleted_at[0])
             self.assertGreaterEqual(finished - progress_times[0], .29)
             self.assertEqual([r["event_type"] for r in records if r["type"] == "event"], ["watchdog_stalled"])
 
