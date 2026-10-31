@@ -2,7 +2,7 @@
 
 A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
 
-Version **0.2.0** replaces the v0.1 standalone Python skill with a Node plugin. The earlier v0.2/v0.3 development-preview labels were not public releases; the public upgrade from v0.1 is tagged `v0.2`.
+Version **0.2.1** builds on the v0.2 Node plugin with fixed-interval recovery and optional coverage of unlisted failures. The published `v0.2` tag retains package 0.2.0; earlier v0.2/v0.3 development-preview labels were not public releases.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
@@ -43,9 +43,9 @@ Commands are owned and cleaned up on cancellation. Watchdogs never terminate exi
 
 ## Recovery
 
-Recovery is opt-in. Defaults: five attempts, exponential delay from 15 seconds, five-minute delay cap, 30-minute incident limit and 24-hour supervisor lifetime. Disable with `monitor_recovery(enabled: false)`.
+Recovery is opt-in. Each eligible failure waits a **fixed 300 seconds** before the next attempt, with a **three-hour limit per incident**. Configure `retry_interval_ms` and `max_elapsed_ms` to change these defaults. The optional `max_attempts` cap defaults to the elapsed limit divided by the interval, rounded up (36); it no longer stops after five attempts. The separate supervisor lifetime defaults to 24 hours. Disable with `monitor_recovery(enabled: false)`.
 
-Codex's built-in retries finish first. Verified transient connection, stream and server failures qualify. Manual interruption disables recovery. Paused/ended goals, exhausted budgets, authentication/policy errors, active user work and ambiguous submission are never overridden. Silence alone is not failure. Recovery reconciles completed effects before continuing; it does not automatically replay commands or restart training.
+Codex's built-in retries finish first. The default `retry_mode: "transient"` accepts recognized connection, stream and server failures. When the user requests retries for any failed turn, choose `retry_mode: "all_failed"`: unknown, missing, authentication and rate-limit errors also qualify. Both modes require a verified terminal `failed` status. Manual interruption disables recovery. Paused/ended goals, explicit host budget/usage/policy stops, active user work and ambiguous submissions remain protected. Silence alone is not failure. Recovery reconciles completed effects before continuing; it does not automatically replay commands or restart training. See [configuration and timing details](codex-monitor/references/plugin.md#session-recovery).
 
 ## Development and validation
 
@@ -53,7 +53,7 @@ Source, tests and build tooling live on the `develop` branch. Run these commands
 
 ```text
 npm test
-npm run package -- dist/codex-monitor-v0.2.0
+npm run package -- dist/codex-monitor-v0.2.1
 ```
 
 Deployment packages include compiled JavaScript, production dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, development dependencies, reports, caches and local state are excluded. Deployment pull requests target `main`; development stays on `develop`. The v0.1 tag remains available for the standalone release.

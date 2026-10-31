@@ -100,23 +100,30 @@ Recovery requires separate user authorization:
   "thread_id": "00000000-0000-0000-0000-000000000001",
   "enabled": true,
   "authorization": "Retry transient network errors, but never resume after I interrupt or pause.",
-  "max_attempts": 5,
-  "base_delay_ms": 15000,
-  "max_delay_ms": 300000,
-  "max_elapsed_ms": 1800000,
+  "retry_mode": "transient",
+  "retry_interval_ms": 300000,
+  "max_elapsed_ms": 10800000,
   "lifetime_ms": 86400000,
   "check_interval_ms": 30000,
   "retry_rate_limits": false
 }
 ```
 
-These defaults allow five attempts with 15/30/60/120/240-second delays. Timers read the local daemon, not the model. Codex retries first. Only verified terminal failed turns with transient connection/stream/server failures qualify. HTTP 401/403, budgets, usage limits, policy blocks and unknown errors do not. Rate-limit retries require opt-in. Codex 0.166.0 labels some truncated HTTP bodies `other`; narrowly matched observed transport signatures are eligible.
+Every attempt waits the same **300 seconds** after the eligible failure is observed. There is no exponential backoff and no catch-up burst after downtime. The first eligible failure starts a **three-hour incident window**; retries and daemon outages do not reset it. No new submission starts at or after its deadline. An already running turn is not terminated. A completed turn resets the incident while the supervisor remains enabled.
 
-Recovery also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. This does not make arbitrary `other` errors retryable. Recovery must already be enabled; delivery and observation alone do not enable it.
+`retry_interval_ms` accepts 1,000–3,600,000 ms and `max_elapsed_ms` accepts 1,000–86,400,000 ms. Optional `max_attempts` accepts 1–86,400 and defaults to `ceil(max_elapsed_ms / retry_interval_ms)` (36 with defaults). This is a cap, not a promised attempt count: at most 35 attempts fit strictly before three hours when failures are immediate; host execution and checks can reduce that number. A smaller explicit cap stops earlier. `lifetime_ms` bounds the supervisor separately (24 hours by default, including healthy observation), and can also end recovery earlier.
+
+For compatibility, `base_delay_ms` is accepted as a deprecated alias for the fixed interval. It must agree with `retry_interval_ms` if both are present. Legacy `max_delay_ms` is validated to be at least that interval, but no longer produces exponential backoff. Existing explicit settings still apply; reconfigure to adopt new defaults. Invalid configuration leaves an existing supervisor intact.
+
+Timers and `check_interval_ms` read the local daemon, not the model. Codex retries first. The default `retry_mode: "transient"` accepts recognized terminal connection/stream/server failures; unknown and HTTP 401/403 errors remain ineligible, and rate-limit retries require `retry_rate_limits: true`. Codex 0.166.0 labels some truncated HTTP bodies `other`; narrowly matched observed transport signatures are eligible.
+
+When the user's authorization covers all failed turns, set `retry_mode: "all_failed"`. It accepts unlisted/new errors, absent error details, authentication failures and rate limits, irrespective of `retry_rate_limits`. It does not treat error text in normal tool output, a completed turn or a silent running turn as failure. Explicit host error codes `sessionBudgetExceeded`, `usageLimitExceeded` and `misalignmentPolicyViolation` remain ineligible in both modes. A broader retry may still fail until its underlying cause is fixed.
+
+The transient mode also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. Arbitrary `other` errors require `all_failed`. Recovery must already be enabled; delivery and observation alone do not enable it.
 
 Before retry, re-read latest turn, runtime status and goal. Interrupted turns, paused/ended goals, exhausted budget and new active work prevent recovery. Manual interruption disables the supervisor until re-enabled. Plugin waits suspend recovery. Silent long tools are not interrupted. Recovery continues the task after reconciling completed effects; it does not replay commands or restart training.
 
-Daemon loss causes local reconnect checks until the finite supervisor deadline. No model action happens before verification. Ambiguous submission disables retries as `unknown`. Restart disables recovery and marks existing observation/wait interrupted; reconfigure explicitly. Host APIs have no atomic compare-and-start, so concurrent user actions remain a race boundary.
+Daemon loss causes local reconnect checks until the supervisor or active incident deadline. No model action happens before verification. Error eligibility and deadlines are rechecked after asynchronous host reads and before submission. Ambiguous submission disables retries as `unknown`. Restart disables recovery and marks existing observation/wait interrupted; reconfigure explicitly. Host APIs have no atomic compare-and-start, so concurrent user actions remain a race boundary.
 
 After an accepted retry, a stale latest-turn snapshot does not cause another submission for the same failed turn. `awaiting_host` means the supervisor is waiting locally for the submitted turn to appear. Only a distinct eligible failure can consume another retry attempt.
 
