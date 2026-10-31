@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Monitor"
+  short_description: "Async result callbacks and training watchdogs for Codex"
+  default_prompt: "Use $codex-monitor to monitor my long-running job, continue independent work while awaiting events, and check and report every monitor before ending each turn."
