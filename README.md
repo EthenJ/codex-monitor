@@ -2,7 +2,38 @@
 
 [![Tests](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml/badge.svg)](https://github.com/EthenJ/codex-monitor/actions/workflows/test.yml)
 
-Event-driven sidecars for Codex sessions: observe command output, file and directory changes, training progress, GPU utilization, and process exit, then queue a follow-up message to the same Codex thread. The monitor process does the waiting; Codex is called only when a meaningful event or health transition occurs.
+A local Codex plugin for workload events and training watchdogs. Register a monitor through MCP, keep working, and receive a follow-up in the same thread when a meaningful event occurs. Routine training progress stays local. The original standalone skill and helper commands remain available.
+
+The plugin adds structured registration, status and cancellation, detached observation across MCP disconnects, short event batches, and an explicit goal wait. With the user's conditional pause/resume authorization, it pauses an active native goal while external work is pending and resumes the unchanged goal after submitting an event. This avoids automatic goal continuation turns that only check whether training has finished. Native goal waiting is experimental and requires access to the same local Codex daemon.
+
+## Install the plugin
+
+Run from this repository with Python 3.10+:
+
+```text
+python -m pip install -e ".[plugin,platform]"
+python codex-monitor/scripts/plugin_runtime.py bootstrap
+codex plugin marketplace add .
+codex plugin add codex-monitor@codex-monitor
+```
+
+Restart Codex to load the tools. `.mcp.json` launches `python`; dependencies must be available to that interpreter. If using a virtual environment, launch Codex from the activated environment or configure an absolute interpreter path. Disable a previously installed standalone copy of the skill to avoid duplicate guidance. See [plugin usage and goal waiting](codex-monitor/references/plugin.md) for examples and limitations.
+
+`bootstrap` starts the local launcher outside the MCP host's process group, so strict Windows MCP clients can disconnect without killing observations. Run it once per login/reboot in a terminal using the same Python environment. It does not call the model or install a scheduled task. `python codex-monitor/scripts/plugin_runtime.py stop-broker` stops the launcher; existing observers keep their own deadlines.
+
+Tools: `monitor_start`, `monitor_status`, `monitor_stop`, `monitor_wait`, and `monitor_cancel_wait`. The agent supplies the exact current thread UUID, a stable workload name, absolute working directory, trigger, deadline and next action. Users can request the workflow in plain language:
+
+> Monitor this training run. Keep routine progress quiet, alert on failure or stalled metrics, and evaluate after completion. When only training remains, pause the goal and resume it on completion or an alert.
+
+No Codex source build, hooks, or API key is required. Sensors run in a separate local plugin service. `monitor_wait` returns immediately; it does not keep an MCP tool call open or add a native `waiting` status to Codex. Goal pause/resume is conditional user-authorized automation, never inferred just from a monitoring request. The underlying API has no atomic goal compare-and-set, so concurrent user lifecycle changes remain a documented limitation.
+
+To build a deployment-only directory from `develop`:
+
+```text
+python tools/build_plugin.py dist/codex-monitor
+```
+
+This includes the plugin manifest, MCP configuration, skill and runtime, with no tests, workflows, validation reports, virtual environments or local state. On the published deployment branch, install directly from that branch's checkout. The plugin changes are developed separately from the existing v0.1 release.
 
 This is the local CLI implementation of the behavior Claude Code ships as its **Monitor tool**. A monitor starts before the workload, receives events from the workload or OS, and calls:
 
@@ -16,6 +47,8 @@ Naming note: this tool monitors **your workload** - command output, files, train
 
 **Tested locally on Windows and Ubuntu, including live NVIDIA GPUs on Ubuntu.** CI covers Windows, Ubuntu, and macOS; see [Platform status](#platform-status) and the commit-specific workflow results for the tested revision.
 
+The new v0.2 plugin and goal bridge have currently been validated on Windows. Ubuntu/GPU results above apply to the earlier standalone runtime; plugin validation on Ubuntu and macOS is pending. See [plugin validation](https://github.com/EthenJ/codex-monitor/blob/develop/docs/plugin-validation.md) on `develop` for the tested scope.
+
 ## Features
 
 - Streaming command-output events with regex matching, debouncing, deadlines, and one-shot limits.
@@ -27,6 +60,8 @@ Naming note: this tool monitors **your workload** - command output, files, train
 - Edge-triggered `watchdog_stalled` and `watchdog_recovered` events.
 - JSONL lifecycle and callback logs; callback payloads arrive on stdin for custom callbacks.
 - `--dry-run`, callback timeouts, no automatic retries, and explicit process/session diagnostics.
+- MCP registration/status/stop tools and a per-thread detached service with bounded persistent state.
+- Quiet training waits, event coalescing and explicit conditional goal pause/resume.
 
 ## Requirements
 
@@ -43,7 +78,7 @@ python -m pip install -e ".[platform]"
 
 `watchdog` enables native file events on Linux/macOS. `psutil` is used as the PID-wait fallback when `pidfd_open` is unavailable or blocked by the kernel/container. Windows uses native APIs and does not need either package for the default path. The editable install ships no importable package (`packages = []`); it exists to resolve the optional dependencies for the scripts in `codex-monitor/scripts`.
 
-## Install the skill
+## Install the standalone skill
 
 On Ubuntu, first create a project environment with native file-event support:
 
@@ -176,9 +211,9 @@ These query actual indices, UUIDs and PCI addresses, reject a partially missing 
 
 What the Windows run covered: native `ReadDirectoryChangesW` create/modify/rename/delete notifications, root replacement detection, single-file watching that did not exist at registration, file-stall and recovery transitions, atomic replacement re-arming, Chinese output and callback JSON, backlog-aware write debouncing that preserves deletion/recreation, `--dry-run` on an actual triggered event, simulated GPU health and sensor outages, PID exit, failed callbacks, unread callback input, warning diagnostics, bounded queues/messages, subscription timing, callback child cleanup, startup log failure cleanup, and the invariant that watchdog expiry, event limits, and cancellation leave the observed training PID running.
 
-The [validation report](docs/validation.md) records the audit findings, commands, platform boundaries, cancellation tests, and the distinction between callback transport tests and a live Codex turn.
+The [validation report](https://github.com/EthenJ/codex-monitor/blob/develop/docs/validation.md) records the audit findings, commands, platform boundaries, cancellation tests, and the distinction between callback transport tests and a live Codex turn.
 
-The [Windows validation results and checklist (中文)](docs/windows-validation.md) record the latest execution and repeatable commands. All four Windows-specific tests passed: pending-read handle cleanup, actual PID exit status, forced monitor termination with Job cleanup, and real console Ctrl+C for native/polling watchers and owned commands. Windows live GPU checks remain untested because this host has no `nvidia-smi`.
+The [Windows validation results and checklist (中文)](https://github.com/EthenJ/codex-monitor/blob/develop/docs/windows-validation.md) record the latest execution and repeatable commands. All four Windows-specific tests passed: pending-read handle cleanup, actual PID exit status, forced monitor termination with Job cleanup, and real console Ctrl+C for native/polling watchers and owned commands. Windows live GPU checks remain untested because this host has no `nvidia-smi`.
 
 Before relying on a GPU rule, validate the workload's thresholds locally with `--dry-run`. Install the optional platform dependencies to use native Linux/macOS file events; the backend is reported in the JSONL log. POSIX `SIGTERM` and Ctrl+C clean up owned commands, callbacks and GPU queries while preserving an observed training PID.
 
@@ -193,17 +228,26 @@ Before relying on a GPU rule, validate the workload's thresholds locally with `-
 ## Layout
 
 ```text
+.codex-plugin/plugin.json
+.agents/plugins/marketplace.json
+.mcp.json
 codex-monitor/
 ├── SKILL.md
 ├── agents/openai.yaml
 ├── references/
 │   ├── session-callbacks.md
+│   ├── plugin.md
 │   └── watchdogs.md
 └── scripts/
     ├── file_events.py
+    ├── goal_bridge.py
     ├── monitor_callback.py
     ├── owned_process.py
+    ├── plugin_runtime.py
+    ├── plugin_server.py
     └── watchdog_monitor.py
+tests/test_plugin.py
+tests/test_plugin_mcp.py
 tests/test_monitor.py
 tests/test_regressions.py
 tests/test_second_review.py
@@ -213,8 +257,10 @@ tests/test_live_gpu.py
 tests/test_boundary_review.py
 tests/test_windows.py
 tools/validate_skill.py
+tools/build_plugin.py
 docs/validation.md
 docs/windows-validation.md
+docs/plugin-validation.md
 ```
 
 The design notes in `references/` explain the Claude Code naming, Codex queue/resume behavior, Agents API continuation mapping, watchdog state machine, and platform dependencies.

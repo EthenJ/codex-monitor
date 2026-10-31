@@ -316,9 +316,9 @@ def validate(args, parser):
             setattr(args, field, path)
 
 
-def run(args):
+def run(args, *, record_sink=None, dispatcher=None, stop_event=None):
     events = EventQueue()
-    stop = threading.Event()
+    stop = stop_event or threading.Event()
     watcher = None
     workers = []
     started = time.monotonic()
@@ -334,7 +334,7 @@ def run(args):
     reason = "deadline"
 
     def log(kind, **data):
-        emit({"type": kind, "timestamp": now_iso(), "source": args.source, "pid": args.pid, **data})
+        (record_sink or emit)({"type": kind, "timestamp": now_iso(), "source": args.source, "pid": args.pid, **data})
 
     def dispatch(event_type, details, observed_at=None):
         nonlocal count, errors, reason
@@ -358,7 +358,9 @@ def run(args):
         message = bounded_message(safe_format(args.message_template, payload))
         payload["message"] = message
         log("event", **{k: v for k, v in payload.items() if k not in {"source", "timestamp", "pid"}})
-        if args.callback_command:
+        if dispatcher is not None:
+            ok, output = dispatcher(payload)
+        elif args.callback_command:
             ok, output = invoke_callback_command(command=args.callback_command, payload=payload, cwd=args.cwd, dry_run=args.dry_run,
                                                   timeout=max(0.001, min(30, args.timeout_ms / 1000 - (time.monotonic() - started))))
         else:
@@ -448,6 +450,8 @@ def run(args):
         reason, errors = "monitor_error", True
         dispatch("monitor_error", {"error": str(exc), "status": "unknown"})
     finally:
+        if stop.is_set() and reason == "deadline" and time.monotonic() - started < args.timeout_ms / 1000:
+            reason = "cancelled"
         stop.set()
         cleanup_errors = []
         if watcher:

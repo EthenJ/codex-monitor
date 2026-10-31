@@ -68,6 +68,11 @@ class WindowsNativeTests(unittest.TestCase):
                 api.SetConsoleCtrlHandler.restype = wintypes.BOOL
                 api.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
                 api.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
+                # A hidden launcher can inherit the console ignore-Ctrl+C flag.
+                # Explicitly enable delivery before spawning the subject so this
+                # tests actual cancellation even when run by the plugin service.
+                if not api.SetConsoleCtrlHandler(None, False):
+                    raise ctypes.WinError(ctypes.get_last_error())
                 process = subprocess.Popen(config["argv"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                            text=True, encoding="utf-8")
                 try:

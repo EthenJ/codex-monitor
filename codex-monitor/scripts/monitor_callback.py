@@ -268,10 +268,12 @@ def validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple
     return args.codex_thread, pattern
 
 
-def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
+def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str], *,
+        record_sink=None, dispatcher=None, stop_event=None) -> int:
     proc = start_process(args.command, args.cwd, args.encoding)
     try:
-        return observe_command(args, thread, pattern, proc)
+        return observe_command(args, thread, pattern, proc, record_sink=record_sink,
+                               dispatcher=dispatcher, stop_event=stop_event)
     finally:
         # Covers cancellation/resource failures before the reader is created.
         terminate_process(proc)
@@ -280,10 +282,11 @@ def run(args: argparse.Namespace, thread: str, pattern: re.Pattern[str]) -> int:
             proc.stdout.close()
 
 
-def observe_command(args, thread, pattern, proc):
+def observe_command(args, thread, pattern, proc, *, record_sink=None, dispatcher=None, stop_event=None):
+    log = record_sink or emit
     started = time.monotonic()
     output: queue.Queue[tuple[str, str | None]] = queue.Queue(maxsize=256)
-    stop = threading.Event()
+    stop = stop_event or threading.Event()
     reader = threading.Thread(target=stream_lines, args=(proc, output, stop, pattern), daemon=True)
     proc.monitor_reader = reader
 
@@ -295,8 +298,11 @@ def observe_command(args, thread, pattern, proc):
     callback_failed = False
     try:
         reader.start()
-        emit(event_record("started", source=args.source, command=args.command, pid=proc.pid))
+        log(event_record("started", source=args.source, command=args.command, pid=proc.pid))
         while True:
+            if stop.is_set():
+                exit_reason = "cancelled"
+                break
             remaining = args.timeout_ms / 1000 - (time.monotonic() - started)
             if remaining <= 0:
                 exit_reason = "deadline"
@@ -312,7 +318,7 @@ def observe_command(args, thread, pattern, proc):
                 break
             if kind == "error":
                 exit_reason = "monitor_error"
-                emit(event_record("monitor_error", source=args.source, command=args.command,
+                log(event_record("monitor_error", source=args.source, command=args.command,
                                   pid=proc.pid, error=line))
                 break
             if kind == "eof":
@@ -348,7 +354,7 @@ def observe_command(args, thread, pattern, proc):
                 "event_index": matched,
             }
             message = bounded_message(safe_format(args.message_template, values))
-            emit(event_record("event", source=args.source, command=args.command, pid=proc.pid, event=line, event_index=matched))
+            log(event_record("event", source=args.source, command=args.command, pid=proc.pid, event=line, event_index=matched))
             payload = {
                 "event_type": "command_output",
                 "timestamp": values["timestamp"],
@@ -359,7 +365,9 @@ def observe_command(args, thread, pattern, proc):
                 "event_index": matched,
                 "message": message,
             }
-            if args.callback_command:
+            if dispatcher is not None:
+                ok, callback_output = dispatcher(payload)
+            elif args.callback_command:
                 ok, callback_output = invoke_callback_command(
                     command=args.callback_command,
                     payload=payload,
@@ -376,7 +384,7 @@ def observe_command(args, thread, pattern, proc):
                     dry_run=args.dry_run,
                     timeout=max(0.001, min(30, args.timeout_ms / 1000 - (time.monotonic() - started))),
                 )
-            emit(
+            log(
                 event_record(
                     "callback",
                     source=args.source,
@@ -407,7 +415,7 @@ def observe_command(args, thread, pattern, proc):
             proc.stdout.close()
 
     return_code = proc.returncode
-    emit(
+    log(
         event_record(
             "stopped",
             source=args.source,

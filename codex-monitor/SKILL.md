@@ -1,11 +1,33 @@
 ---
 name: codex-monitor
-description: Resume the same Codex session on command output, file changes, training inactivity, low GPU utilization, or process exit. Prefer event callbacks when waiting for external results; use for long-running tests and GPU training unless the user explicitly opts out. Check and report monitor status before ending a turn.
+description: Monitor workload output, files, training inactivity, GPU utilization, or process exit and wake the same Codex thread. Prefer plugin tools for asynchronous waiting, including explicitly authorized goal pause/resume. Use for long tests and GPU training unless opted out; report monitor status before ending a turn.
 metadata:
   short-description: Event callbacks and training watchdogs for Codex
 ---
 
 # Codex Monitor
+
+## Plugin workflow
+
+When the plugin's `monitor_start`, `monitor_status`, `monitor_stop`, `monitor_wait`, and `monitor_cancel_wait` tools are available, prefer them over shell-launching the helpers. The plugin keeps registration, evidence, delivery state and deadlines in a per-thread service that survives MCP disconnects. For installation, examples and goal limitations, read [references/plugin.md](references/plugin.md). Use the legacy helpers below when plugin tools are unavailable.
+
+Obtain the exact current `CODEX_THREAD_ID` from the conversation's execution environment once and pass it to every tool. A shared MCP process's inherited thread ID is not a caller identity. Pass an absolute workload `cwd`, a stable job name, finite lifetime and the next authorized action. An identical live registration returns the existing monitor. Confirm `state: armed` before claiming registration; retain its ID for cancellation and reporting.
+
+For training, prefer a watchdog over meaningful progress and the actual training PID. Set `watchdog_only: true` so routine metrics/checkpoint updates reset local health timers without calling the model. Wake on completion/process exit, suspected stall, sensor failure and expiry. Select notification types deliberately; GPU samples, healthy heartbeats and unchanged status must not wake Codex. For a one-time file result, use a narrow path/pattern and `max_events: 1`. A command monitor owns its command; use a watchdog to observe an existing training process without controlling its lifetime.
+
+Continue independent work after registration. Call `monitor_wait` only when the remaining work actually depends on the monitored result. It returns immediately and records which monitors can release the wait and what to do next. It wakes on **any** selected monitor; express combined file/GPU health rules inside one watchdog. A result that arrived before registration of the wait returns `ready`; inspect it and proceed instead of pausing.
+
+### Goals and external waits
+
+An active native goal may automatically continue after a final response. A plugin wait without native goal control does not suppress that continuation. Do not represent ordinary monitor registration as goal waiting, repeatedly call status, or mark a pending goal complete/blocked just to stop continuation.
+
+If the user has explicitly authorized pausing the goal while waiting **and resuming it on the selected event**, provide their applicable instruction as `goal_authorization` to `monitor_wait`. Reuse that authorization across turns; never invent it or infer it solely from a request to observe training. The plugin pauses an existing active goal through the current daemon, preserving objective, budget and usage. After a confirmed pause, report status and yield; do not continue goal work while it is paused. On an event it submits one follow-up and conditionally restores the unchanged goal. It must not create a goal, reset its budget, override a later user edit/pause, or claim immediate interruption of an active tool.
+
+If the host refuses lifecycle control or the daemon cannot verify the target goal, report that **goal waiting is unavailable** and the monitors' actual states. Do not retry in an agent loop. Cancellation mutes the wait's notifications and leaves its paused goal unchanged. After a service crash, uncertain delivery or ambiguous goal mutation, inspect the saved evidence and let the user decide recovery rather than blindly resuming or delivering duplicates.
+
+Before every final response, deliberate pause or handoff, call `monitor_status` once for the task and include a concise workload-level status, latest relevant event/delivery result, deadline and stop method for active monitors. Report sensor/callback failures explicitly. `submitted` confirms submission, not that Codex executed the follow-up. If no monitors remain active, say so. Avoid exposing internal transport details unless they explain a failure.
+
+## Legacy helper workflow
 
 Register a bounded sidecar that observes an event source and queues a follow-up to the original Codex thread. Choose the source, trigger condition, callback instructions, and lifetime from the request.
 

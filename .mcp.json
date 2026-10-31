@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "monitor": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["${PLUGIN_ROOT}/codex-monitor/scripts/plugin_server.py"],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}
