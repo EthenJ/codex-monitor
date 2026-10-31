@@ -106,6 +106,8 @@ test('real provider busy stream error recovers despite Codex classifying it as o
   f.state.mode = 'success';
   await until(() => f.recovery.state.last_submission_at);
   await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
-  assert.equal(f.recovery.state.attempts, 1);
-  assert.ok(f.state.requests.some(r => r.body.includes('session_recovery')));
+  // Completion resets the incident counter; count actual provider requests
+  // instead of racing that bookkeeping on faster hosts.
+  assert.equal(f.state.requests.filter(r => r.body.includes('session_recovery')).length, 1);
+  assert.equal((await latestTurn(f.bridge, f.threadId)).id, f.recovery.state.submitted_turn);
 });
