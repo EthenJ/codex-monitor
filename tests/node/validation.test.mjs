@@ -148,7 +148,7 @@ test('real MCP publishes typed schemas, rejects typos, previews without service 
     await client.connect(new StdioClientTransport({ command: process.execPath,
       args: [fileURLToPath(new URL('../../codex-monitor/runtime/server.js', import.meta.url))], env: { ...process.env, CODEX_MONITOR_HOME: state } }));
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 9);
+    assert.equal(tools.length, 11);
     const startSchema = tools.find(x => x.name === 'monitor_start').inputSchema;
     const variants = startSchema.properties.options.anyOf;
     assert.ok(variants.some(x => x.properties.command)); assert.ok(variants.some(x => x.properties.gpu_util_below?.maximum === 100));

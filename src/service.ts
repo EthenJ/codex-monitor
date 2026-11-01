@@ -130,6 +130,7 @@ export async function serve(directory: string, threadId?: string) {
           case 'wait': result = await manager.beginWait(params); break;
           case 'cancel_wait': result = await manager.cancelWait(); break;
           case 'ack': result = await manager.acknowledge(params); break;
+          case 'event': result = await manager.reviewEvent(params); break;
           case 'recovery': result = await manager.configureRecovery(params); break;
           case 'shutdown': if (!manager.isIdle()) throw Error('Stop monitors, cancel waits, disable recovery before shutdown'); result = { state: 'shutting_down' }; setImmediate(() => void close()); break;
           default: throw Error('Unknown monitor method');

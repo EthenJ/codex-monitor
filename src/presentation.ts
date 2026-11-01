@@ -1,5 +1,7 @@
 import { Json } from './common.js';
-import { summarize } from './report.js';
+import { compactReport, summarize } from './report.js';
+import { DisplayMode } from './display.js';
+import { eventNames } from './event-text.js';
 
 export const toolTitles: Record<string, string> = {
   monitor_start: 'Start workload monitor', monitor_stop: 'Stop workload monitor',
@@ -7,74 +9,92 @@ export const toolTitles: Record<string, string> = {
   monitor_validate: 'Validate monitor configuration', monitor_wait: 'Wait for workload event',
   monitor_cancel_wait: 'Cancel workload wait', monitor_ack: 'Acknowledge monitor events',
   monitor_recovery: 'Configure session recovery',
+  monitor_event: 'Workload event', monitor_display: 'Monitor display settings',
 };
-// Workload labels are untrusted text, never Markdown/HTML supplied by the workload.
-function cell(value: unknown, limit = 160): string {
-  return String(value ?? '—').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
-    .slice(0, limit).replace(/[&<>\\`*_{}\[\]()#+.!|~-]/g, c => `&#${c.charCodeAt(0)};`);
+// Labels and errors are untrusted. Keep terminal controls, bidi overrides and
+// Markdown/HTML constructs out of display text; preserve originals in structured data.
+function label(value: unknown, limit = 160): string {
+  return String(value ?? 'unknown').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
+    .replace(/[<>\\`*{}\[\]|]/g, '').slice(0, limit);
 }
 function at(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 8640000000000000
-    ? new Date(value).toISOString() : '—';
+    ? new Date(value).toISOString() : 'unknown';
 }
 function duration(value: unknown) {
-  return typeof value === 'number' && Number.isFinite(value) ? `${value / 1000} s` : '—';
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown';
+  return value % 3600000 === 0 ? `${value / 3600000} h` : `${value / 1000} s`;
 }
-function rows(entries: Array<[string, unknown]>) {
-  return ['| Field | Value |', '| --- | --- |', ...entries.map(([key, value]) => `| ${cell(key)} | ${cell(value)} |`)];
-}
-function recoveryRows(r: Json): Array<[string, unknown]> {
-  return [['Recovery', `${r.enabled ? 'enabled' : 'disabled'} · ${r.state ?? 'unknown'}`],
-    ['Attempts', r.attempts ?? 0], ['Retry interval', duration(r.policy?.retry_interval_ms)],
-    ['Incident limit', duration(r.policy?.max_elapsed_ms)], ['Next retry (UTC)', at(r.next_retry_at)]];
-}
-export function renderSummary(tool: string, data: Json, isError = false): string {
-  const lines = [`**Codex Monitor · ${cell(toolTitles[tool] || tool)}**`, ''];
-  if (isError || data.ok === false) {
-    lines.push('**Request failed**', '', ...rows([['Error', data.error?.message || data.error || data.state || 'Validation failed']]));
-    if (!data.validation && tool !== 'monitor_validate') return lines.join('\n');
-  }
+const liveStates = new Set(['armed', 'starting', 'stopping']);
+function state(value: unknown) { return value === 'armed' ? 'running' : label(value); }
+
+export function renderSummary(tool: string, data: Json, isError = false, mode: DisplayMode = 'compact', view?: Json): string {
   const validation = data.validation || (tool === 'monitor_validate' ? data : undefined);
   if (validation) {
-    lines.push('', `**Validation: ${validation.valid ? 'passed' : 'failed'}**`, '', '| Check | Status |', '| --- | --- |');
-    for (const check of (validation.checks || []).slice(0, 10)) lines.push(`| ${cell(check.name)} | ${cell(check.status)} |`);
-    for (const error of (validation.errors || []).slice(0, 5)) lines.push(`- ${cell(error.path)}: ${cell(error.message)}`);
-    for (const warning of (validation.warnings || []).slice(0, 5)) lines.push(`- ${cell(warning, 350)}`);
-    lines.push('', 'Snapshot only; validation starts no workload or recovery.');
-  } else if (tool === 'monitor_report' || tool === 'monitor_status') {
-    const r = tool === 'monitor_report' ? data : summarize(data, 'live');
-    lines.push(r.verified ? `Status source: ${cell(r.source)}` : '**Unverified saved state — live supervision is not confirmed.**', '',
-      ...rows([['Active monitors', r.summary.active], ['Stopped', r.summary.stopped],
-        ['Failed / unknown', r.summary.failed_or_unknown], ['Unhandled events', r.summary.unhandled_events],
-        ['Wait', r.wait?.state || 'none'], ...recoveryRows(r.recovery)]));
-    if (r.monitors?.length) {
-      lines.push('', '| Monitor | State | Deadline (UTC) |', '| --- | --- | --- |');
-      for (const m of r.monitors.slice(0, 6)) lines.push(`| ${cell(m.name)} | ${cell(m.state)} | ${at(m.deadline)} |`);
-      const omitted = Math.max(0, r.monitors.length - 6) + (r.omitted?.monitors || 0);
-      if (omitted) lines.push('', `${omitted} more monitor records in structured status/history.`);
-    }
-    lines.push('', `Checked: ${at(r.checked_at)} · Thread: ${cell(r.thread_id)}`);
-  } else if (tool === 'monitor_recovery') {
-    lines.push(...rows(recoveryRows(data)));
-  } else {
-    const entries: Array<[string, unknown]> = [['State', data.state ?? (isError ? 'failed' : 'unknown')]];
-    if (data.name) entries.push(['Monitor', data.name]);
-    if (data.id) entries.push(['Monitor ID', data.id]);
-    if (data.deadline != null) entries.push(['Deadline (UTC)', at(data.deadline)]);
-    if (data.monitor_ids) entries.push(['Selected monitors', data.monitor_ids.length]);
-    if (data.event_ids) entries.push(['Acknowledged events', data.event_ids.length]);
-    if (data.reason) entries.push(['Reason', data.reason]);
-    if (data.goal) entries.push(['Goal', typeof data.goal === 'string' ? data.goal : 'See structured result']);
-    if (data.notifications) entries.push(['Notifications', data.notifications]);
-    lines.push(...rows(entries));
+    const lines = [`Monitor · validation ${validation.valid ? 'passed' : 'failed'}`];
+    for (const error of (validation.errors || []).slice(0, 5)) lines.push(`  ${label(error.path)}: ${label(error.message, 250)}`);
+    for (const warning of (validation.warnings || []).slice(0, 3)) lines.push(`  Warning: ${label(warning, 250)}`);
+    const omitted = Math.max(0, (validation.errors?.length || 0) - 5) + Math.max(0, (validation.warnings?.length || 0) - 3);
+    if (omitted) lines.push(`  ${omitted} more details in structured status`);
+    return lines.join('\n');
   }
+  if (isError || data.ok === false) return `Monitor · request failed: ${label(data.error?.message || data.error || data.state || 'unknown error', 250)}`;
+  if (tool === 'monitor_display') return `Monitor · ${label(data.mode)} display${data.warnings?.length ? '\n  '+data.warnings.map((w: string) => label(w)).join('\n  ') : ''}`;
+  if (tool === 'monitor_event') {
+    const lines: string[] = [], events: Json[] = data.events || [];
+    for (const e of events.slice(0, mode === 'verbose' ? 8 : 3)) {
+      const failure = ['monitor_error', 'monitor_expired', 'watchdog_stalled'].includes(e.event_type) ||
+        (e.event_type === 'command_exit' && e.evidence?.returncode !== 0);
+      const icon = failure ? '!' : e.event_type === 'command_exit' && e.evidence?.returncode === 0 ? '✓' : '●';
+      const exit = ['command_exit', 'process_exit'].includes(e.event_type) ? ` · exit ${label(e.evidence?.returncode ?? 'unknown')}` : '';
+      lines.push(`Monitor event · ${label(e.name || e.monitor_id)}`,
+        `  ${icon} ${eventNames[e.event_type] || label(e.event_type)}${exit} · ${e.actionable ? 'needs review' : label(e.state)}`);
+      if (mode === 'verbose') lines.push(`  Event: ${label(e.id)} · Monitor: ${label(e.monitor_id)}`, `  At ${at(e.occurred_at)} · observer ${state(e.monitor_state)}`);
+    }
+    if (events.length > 3 && mode !== 'verbose') lines.push(`  +${events.length - 3} more events in details`);
+    const report = data.report || view;
+    if (report) lines.push(compactReport(report));
+    return lines.join('\n') || 'Monitor · no selected events';
+  }
+  if (tool === 'monitor_report') return compactReport(data);
+  if (tool === 'monitor_status') {
+    const r = summarize(data, 'live');
+    const lines = [compactReport(r)];
+    if (mode === 'compact') {
+      if (r.summary.unhandled_events) lines[0] += ` · ${r.summary.unhandled_events} events to review`;
+      return lines.join('\n');
+    }
+    const active = r.monitors.filter((m: Json) => liveStates.has(m.state));
+    for (const m of active.slice(0, 6)) lines.push(`  ${label(m.name)} · ${state(m.state)} · until ${at(m.deadline)}`);
+    if (r.summary.active > 6) lines.push(`  +${r.summary.active - 6} more active monitors`);
+    for (const event of r.events.slice(0, 3)) {
+      const monitor = r.monitors.find((m: Json) => m.id === event.monitor_id);
+      lines.push(`  Event · ${label(monitor?.name || event.monitor_id)} · ${label(event.event_type)} · ${label(event.state)}`);
+    }
+    if (r.summary.unhandled_events > 3) lines.push(`  +${r.summary.unhandled_events - 3} more events to review`);
+    if (r.wait && ['preparing', 'waiting', 'waking'].includes(r.wait.state)) lines.push(`  Goal wait · ${label(r.wait.state)}`);
+    return lines.join('\n');
+  }
+  if (tool === 'monitor_recovery') {
+    if (!data.enabled) return 'Monitor · auto-retry off';
+    return `Monitor · auto-retry on · ${label(data.state)}\n  Every ${duration(data.policy?.retry_interval_ms)} · limit ${duration(data.policy?.max_elapsed_ms)} per incident`;
+  }
+  if (tool === 'monitor_ack') {
+    const count = data.event_ids?.length || 0;
+    return `Monitor · ${count} ${count === 1 ? 'event' : 'events'} acknowledged${view ? '\n'+compactReport(view) : ''}`;
+  }
+  if (tool === 'monitor_cancel_wait') return 'Monitor · wait cancelled · goal unchanged';
+  if (tool === 'monitor_wait') return `Monitor · wait ${state(data.state)}${data.reason ? ` · ${label(data.reason)}` : ''}`;
+  const lines = [`Monitor · ${label(data.name || data.id || tool)} · ${state(data.state)}`];
+  if (mode === 'verbose' && tool === 'monitor_start' && data.deadline != null) lines.push(`  Until ${at(data.deadline)}`);
   return lines.join('\n');
 }
-export function toolResult(tool: string, data: Json, isError = false, view?: Json) {
-  return { content: [
-    { type: 'text' as const, text: renderSummary(tool, data, isError), annotations: { audience: ['user' as const] } },
-    // Keep the JSON fallback for clients that do not consume structuredContent.
-    { type: 'text' as const, text: JSON.stringify(data), annotations: { audience: ['assistant' as const] } },
-  ], structuredContent: data, ...(isError ? { isError: true } : {}),
-    _meta: { monitorView: { tool, title: toolTitles[tool] || tool, result: data, report: view, isError } } };
+export function toolResult(tool: string, data: Json, isError = false, view?: Json, mode: DisplayMode = 'compact') {
+  return {
+    // CLI renders content literally, including blocks marked assistant-only.
+    // Keep one readable block for every tool and retain machine data separately.
+    content: [{ type: 'text' as const, text: renderSummary(tool, data, isError, mode, view) }],
+    structuredContent: data, ...(isError ? { isError: true } : {}),
+    _meta: { monitorView: { tool, title: toolTitles[tool] || tool, result: data, report: view, isError, display_mode: mode } },
+  };
 }

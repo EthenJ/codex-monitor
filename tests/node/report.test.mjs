@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { summarize, readReport, reportSchema } from '../../codex-monitor/runtime/report.js';
+import { compactReport, summarize, readReport, reportSchema } from '../../codex-monitor/runtime/report.js';
 import { stopReport } from '../../codex-monitor/runtime/stop-report.js';
 import { ensureBroker, ensureService, rpc } from '../../codex-monitor/runtime/service.js';
 import { owned } from '../../codex-monitor/runtime/processes.js';
@@ -31,8 +31,8 @@ test('report with no service never creates state, hooks never block or continue 
   for (const event of ['Stop', 'Interrupt']) {
     const output = await stopReport({ session_id: f.thread, hook_event_name: event, turn_id: 'fixture' }, f.root);
     assert.deepEqual(Object.keys(output), ['systemMessage']);
-    const payload = JSON.parse(output.systemMessage); assert.equal(payload.tool, 'monitor_report');
-    assert.equal(payload.result.source, 'empty'); assert.equal(payload.result.summary.active, 0);
+    assert.equal(output.systemMessage, 'Monitor · none running');
+    assert.ok(!output.systemMessage.includes(f.thread));
     assert.equal(existsSync(f.directory), false);
   }
   await assert.rejects(stopReport({ session_id: '../other', hook_event_name: 'Stop' }, f.root));
@@ -44,10 +44,23 @@ test('stale service snapshots are unverified; corrupt or wrong-session state is 
   await writeFile(file, JSON.stringify(state));
   const before = await readFile(file, 'utf8'); const r = await readReport(f.thread, f.root);
   assert.equal(r.verified, false); assert.equal(r.source, 'saved'); assert.ok(r.warnings.length);
+  assert.equal(compactReport(r), 'Monitor · live status unavailable');
+  assert.equal((await stopReport({ session_id: f.thread, hook_event_name: 'Interrupt' }, f.root)).systemMessage, 'Monitor · live status unavailable');
+  assert.equal((await stopReport({ session_id: randomUUID(), hook_event_name: 'Stop' }, f.root)).systemMessage, 'Monitor · none running');
   assert.equal(await readFile(file, 'utf8'), before); assert.equal(existsSync(path.join(f.directory, 'endpoint.json')), false);
   await writeFile(file, '{bad'); assert.equal((await readReport(f.thread, f.root)).source, 'unavailable');
   await writeFile(file, JSON.stringify({ ...state, thread_id: randomUUID() }));
   assert.equal((await readReport(f.thread, f.root)).source, 'unavailable');
+});
+test('compact reports count running observers before truncation and omit inactive history', () => {
+  const monitors = [...Array.from({ length: 40 }, () => ({ state: 'armed' })),
+    ...['starting', 'stopping', 'stopped', 'cancelled', 'failed', 'unknown'].map(state => ({ state, name: 'private-label' }))];
+  const r = summarize({ monitors, recovery: { enabled: false, state: 'interrupted' } }, 'live');
+  assert.equal(r.monitors.length, 32);
+  assert.equal(r.summary.running, 40); assert.equal(r.summary.active, 42);
+  assert.equal(compactReport(r), 'Monitor · 40 running · 1 starting · 1 stopping');
+  assert.equal(compactReport(summarize({ monitors: monitors.slice(42) }, 'live')), 'Monitor · none running');
+  assert.equal(compactReport(summarize({ recovery: { enabled: true } }, 'live')), 'Monitor · none running · auto-retry on');
 });
 test('live report reflects service without launching commands, events or recovery', async t => {
   const f = await fixture(t), broker = await ensureBroker(f.root);

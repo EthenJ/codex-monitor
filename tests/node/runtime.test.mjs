@@ -11,6 +11,7 @@ import { Health, parseGpu } from '../../codex-monitor/runtime/health.js';
 import { owned, capture } from '../../codex-monitor/runtime/processes.js';
 import { sameGoal, RpcError } from '../../codex-monitor/runtime/bridge.js';
 import { startSensor, validateOptions } from '../../codex-monitor/runtime/sensors.js';
+import { displaySettings } from '../../codex-monitor/runtime/display.js';
 
 class Host extends EventEmitter {
   goal = { threadId: 't', createdAt: 1, updatedAt: 1, objective: 'Train', status: 'active', tokenBudget: 10000, tokensUsed: 1, timeUsedSeconds: 1 };
@@ -65,6 +66,16 @@ test('acknowledgement before dispatch suppresses stale event', async t => {
   manager.event(r.id, { event_type: 'file_change', path: 'a' });
   await manager.acknowledge({ event_ids: Object.keys(manager.events), resolution: 'Already handled' });
   await manager.flush(); assert.equal(host.submissions.length, 0);
+});
+
+test('callback presentation switches without restarting the observer or changing event delivery',async t=>{
+  const {manager,host,start}=await fixture(t),r=await start();
+  manager.event(r.id,{event_type:'file_change',path:'first'});await manager.flush();
+  assert.match(host.submissions[0].toolOutput.output,/Compact display: call monitor_event/);
+  displaySettings(manager.threadId,'verbose',path.dirname(manager.directory));
+  manager.event(r.id,{event_type:'file_change',path:'second'});await manager.flush();
+  assert.match(host.submissions[1].toolOutput.output,/Verbose display: read monitor_status/);
+  assert.equal(manager.records[r.id].state,'armed');assert.equal(host.submissions.length,2);
 });
 test('event deduplication, supersession and expiration', async t => {
   const { manager, host, start } = await fixture(t), r = await start();
@@ -194,7 +205,7 @@ test('default fixed five-minute retries stop at the three-hour incident boundary
     t.mock.timers.setTime(due); await recovery.check();
     assert.equal(host.submissions.length, attempt);
     assert.equal(host.submissions.at(-1).rootTurnId, 'failed');
-    assert.equal(JSON.parse(host.submissions.at(-1).toolOutput.output).retry_mode, 'all_failed');
+    assert.match(host.submissions.at(-1).toolOutput.output, /policy all_failed/);
     host.turn.status = 'failed'; host.turn.error = { codexErrorInfo: 'newUnknownError' };
     await recovery.check();
   }

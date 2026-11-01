@@ -2,33 +2,45 @@
 
 ## Install
 
-Requires Node.js 22.22+ (24 recommended) and a compatible local Codex daemon. Validated with Codex 0.166.0. No Python runtime dependency.
+Requires Node.js 22.22+ (24 recommended), npm, Codex CLI 0.166.0+ and a compatible local Codex daemon. Validated with Codex 0.166.0. No Python runtime dependency.
 
-From the development checkout:
+Run the installation wizard from a complete source checkout or deployment package:
 
 ```text
-npm ci
-npm run build
-npm run bootstrap
-codex plugin marketplace add .
-codex plugin add codex-monitor@codex-monitor
+node install.mjs
 ```
 
-For a deployment package replace the first two commands with `npm ci --omit=dev`; compiled JavaScript is included. Restart the client. Disable an older standalone skill copy to avoid duplicate guidance. Codex must find the same Node environment and dependencies.
+It asks for preferences, builds when needed, verifies a staged bundle and registers it through the official Codex commands. Use `--dry-run` for a preview. For agent-assisted answers, isolated simulation, upgrades and the activation checklist, read [Interactive installation](installation.md). Disable an older standalone skill copy to avoid duplicate guidance. Codex must find the same Node environment and dependencies.
 
 Run bootstrap from an external terminal once per login/reboot. Its hidden launcher runs outside the MCP host's process job and installs no scheduled task/service. Stop it with `node codex-monitor/runtime/cli.js stop-broker`; existing observers retain their deadlines. Windows uses native breakaway flags and fails explicitly when denied; POSIX uses detached sessions.
 
 ## Tools and state
 
-All nine MCP tools return a readable result card, their original structured data, and an optional MCP Apps view. `monitor_report` opens a live status panel on compatible hosts; other operation cards offer a button to start live updates. The timeline records monitor creation/arming/stopping, event delivery and acknowledgement, goal waits and recovery changes. History is capped at 128 transitions, with an explicit omitted count. Routine health samples are not lifecycle transitions.
+All eleven MCP tools return readable plain text, structured data, and an optional MCP Apps view. Routine `monitor_report` and Stop/Interrupt messages are a single line, for example `Monitor · 2 running`. Starting/stopping counts and enabled automatic retry are included only when applicable. Inactive monitors, IDs and event history are omitted from routine text; full details remain in structured data and `monitor_status`. Unverified saved state produces `Monitor · live status unavailable` rather than a stale running count. No tool duplicates its JSON in text or uses Markdown tables: Codex CLI renders these blocks literally, including assistant-audience blocks.
+
+`monitor_display` gets or sets `mode: "compact" | "verbose"` for the exact caller thread. Compact is the default. The setting lives in the thread's state directory, outside the installed plugin, and applies to subsequent tool calls and callbacks without a restart or hook reapproval. It does not change observation, delivery, recovery or goal policy. Invalid updates are rejected; corrupt saved preferences fall back to compact with a warning. Compact reduces calls through the skill workflow, rather than hiding completed calls: Codex owns the `Called` headers and exposes no supported per-call hiding flag in the inspected 0.166.0 interface. MCP `ui.visibility` controls model/app access, not terminal output.
+
+In compact mode, a callback directs the agent to `monitor_event(event_ids)` for a visible trigger card, complete evidence and registered actions. After handling, `monitor_event(event_ids, resolution)` acknowledges those IDs and includes the final status in the same card. If evidence was already inspected and work completed, only the latter call is necessary. Do not acknowledge uninspected work just to combine calls. This replaces the old status/ack/stop/report sequence with one or two event cards. Naturally stopped observers require no extra stop call. Live observers continue until their deadline or explicit cancellation, and unrelated/newer events are preserved. Expired, superseded, suppressed and already acknowledged events retain their state; unknown IDs reject the whole selection before acknowledgements.
+
+Every operation includes a fresh `report` in structured data, so compact mode can reuse that status before yielding if subsequent work has not made it stale. Verbose shows diagnostic detail and retains explicit status/ack/report calls. The CLI event card identifies the workload, trigger, exit status when available, review/acknowledgement state and running count. The optional HTML panel highlights the same selected events. A native wakeup alone remains a `functionCallOutput`; the event card appears when the awakened agent calls the MCP event tool. No extra model turn is submitted solely for UI rendering.
+
+Codex CLI 0.166.0 does not render this HTML panel. Its `Called server.tool(arguments)` header and expand/collapse controls belong to Codex; the plugin controls the readable result beneath them. Confirm the user's actual client before troubleshooting graphics. CLI text output is not evidence of a desktop rendering failure. Keep the terminal workflow useful without a browser, model-driven refresh loops or claims of an embedded GUI.
+
+The native `monitor_event` notification is readable text, not a JSON serialization. It retains exact monitor/event IDs so the agent can inspect `monitor_status`, follow the registered action and acknowledge the right event. Evidence and workload-provided instructions are not printed in the notification. Session recovery uses the same native channel with the retry attempt, policy, failed-turn ID and recovery ID. The host API provides only one output string for these notifications, so their necessary routing references remain visible.
+
+`monitor_report` opens a live status panel on compatible hosts; other operation cards offer a button to start live updates. The timeline records monitor creation/arming/stopping, event delivery and acknowledgement, goal waits and recovery changes. History is capped at 128 transitions, with an explicit omitted count. Routine health samples are not lifecycle transitions.
 
 The panel uses `monitor_report(after_revision, wait_ms)` with a bounded event wait (up to 25 seconds), then re-arms in the UI. This is long polling at the transport layer, not model-side polling or a model wakeup. There is at most one outstanding request per view and 32 per thread. Hidden/closed views stop re-arming; disconnects stop live mode until explicitly retried. Reports never launch an observer, enable recovery or submit a turn. Legacy services and hosts without MCP Apps retain snapshot/text results. Background changes cannot create arbitrary native chat items: they update the panel history, and the normal callback turn's tool calls render event cards. Stop/Interrupt hook messages remain host-controlled informational output.
 
-To enable automatic stop reports, review and trust the installed plugin's exact Stop and Interrupt definitions using Codex `/hooks`. When the user has authorized this setup, the agent may complete that supported UI flow without asking again. The plugin never grants itself trust or bypasses Codex's trust enforcement. Hosts may require MCP Apps support to be enabled before displaying the HTML view.
+To enable automatic stop reports, review and trust the installed plugin's exact Stop and Interrupt definitions using Codex `/hooks`. Finish all builds, dependency installation and file synchronization before reviewing hooks: Codex 0.166.0 also fingerprints the entire installed plugin directory. Changing runtime files, dependencies or documentation afterward invalidates approval, even if `hooks/hooks.json` is unchanged. Keep the installed bundle unchanged after approval. When the user has authorized this setup, the agent may complete that supported UI flow without asking again. The plugin never grants itself trust or bypasses Codex's trust enforcement. Hosts may require MCP Apps support to be enabled before displaying the HTML view.
+
+For `plugin contents changed; hook approval required`, finish the update, inspect the installed reporting commands, then review the exact Stop and Interrupt hooks again in `/hooks`. Verify a fresh hook scan and actual execution; a loaded thread's cached `hooks/list` metadata can still say `trusted` after bundle contents change. Existing sessions may require a supported runtime configuration reload or reopening to load the new approval. Reloading only MCP servers does not refresh hook trust.
 
 | Tool | Purpose |
 | --- | --- |
 | `monitor_start` | Register an observer; return readiness and deadline |
+| `monitor_event` | Show selected triggers and evidence; optionally acknowledge handled events and return final status |
+| `monitor_display` | Get/set per-thread compact or verbose presentation without restarting |
 | `monitor_validate` | Read-only preflight, normalized settings and structured checks |
 | `monitor_report` | Compact structured status without creating a service |
 | `monitor_status` | Monitors, delivery, wait and recovery; select a monitor for full evidence |
@@ -67,7 +79,7 @@ Start automatically repeats schema and local prerequisite checks before recordin
 
 `monitor_report(thread_id)` returns a genuine MCP tool result with `type: monitor_report`, timestamps, summary counts, monitor deadlines, pending events, wait and recovery policy, and stop actions. It never creates a service, observer or model turn. If the service is unreachable, saved state is explicitly `verified: false`; historical `armed`/`enabled` fields are not proof of live supervision. Output omits raw evidence, commands and authorization text, and bounds histories with omitted counts.
 
-The plugin includes synchronous `Stop` and `Interrupt` command hooks. They use the hook event's exact `session_id`, perform a bounded read, and emit JSON in `systemMessage` containing `{tool: "monitor_report", hook, turn_id, result}`. They never return a continuation/block decision or submit a callback, so reports cannot create an agent wake loop or override manual interruption. They do not cancel workloads or recovery; interruption handling remains the supervisor's responsibility.
+The plugin includes synchronous `Stop` and `Interrupt` command hooks. They use the hook event's exact `session_id`, perform a bounded read, and return the hook protocol's JSON envelope with one human-readable `systemMessage`, such as `Monitor · 2 running`. They do not serialize the full report into that message. They never return a continuation/block decision or submit a callback, so reports cannot create an agent wake loop or override manual interruption. They do not cancel workloads or recovery; interruption handling remains the supervisor's responsibility.
 
 Review and trust these hooks in Codex `/hooks` after installing/upgrading. Trust is required by Codex for the current hook definition, not granted automatically by this plugin. The host renders hook status messages; they are not synthetic MCP calls. `monitor_report` is the direct tool-call display path. `codex exec --json` can omit hook messages even when hooks execute, and host shutdown cannot guarantee a final report. See [official hook behavior and trust](https://learn.chatgpt.com/docs/hooks).
 

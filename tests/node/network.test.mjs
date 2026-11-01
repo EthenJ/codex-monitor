@@ -7,6 +7,15 @@ import path from 'node:path';
 import { Bridge, latestTurn } from '../../codex-monitor/runtime/bridge.js';
 import { Recovery } from '../../codex-monitor/runtime/recovery.js';
 
+function recoveryRequests(f) {
+  return f.state.requests.filter(request => {
+    const input = JSON.parse(request.body).input;
+    return Array.isArray(input) && input.some(item =>
+      ['custom_tool_call_output', 'function_call_output'].includes(item.type) &&
+      JSON.stringify(item).includes('Recovery ID:'));
+  });
+}
+
 async function until(predicate, timeout = 15000) {
   const deadline = Date.now() + timeout;
   while (!await predicate()) { if (Date.now() > deadline) throw Error('Network fixture condition timed out'); await new Promise(r => setTimeout(r, 30)); }
@@ -72,7 +81,8 @@ test('real provider HTTP 503 recovers through native tool output', { skip: !proc
   await until(() => f.recovery.state.last_submission_at);
   await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
   assert.ok(f.state.calls >= 2);
-  assert.ok(f.state.requests.some(r => r.body.includes('session_recovery')));
+  assert.equal(recoveryRequests(f).length, 1);
+  assert.ok(recoveryRequests(f)[0].body.includes(f.recovery.state.retry_id));
 });
 test('real provider stream disconnect recovers after terminal failure', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
   const f = await fixture(t); f.state.mode = 'disconnect';
@@ -91,7 +101,7 @@ for (const retry_mode of ['transient', 'all_failed']) test(`manual interrupt of 
   await until(() => f.recovery.state.state === 'cancelled');
   f.state.mode = 'success'; await f.recovery.check();
   assert.equal(f.recovery.state.attempts, 0); assert.equal(f.recovery.state.enabled, false);
-  assert.equal(f.state.requests.filter(r => r.body.includes('session_recovery')).length, 0);
+  assert.equal(recoveryRequests(f).length, 0);
 });
 
 test('unlisted real provider failure retries only under all_failed mode', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async t => {
@@ -105,7 +115,7 @@ test('unlisted real provider failure retries only under all_failed mode', { skip
   await until(() => f.recovery.state.state === 'backoff'); f.state.mode = 'success';
   await until(() => f.recovery.state.last_submission_at);
   await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
-  assert.equal(f.state.requests.filter(r => r.body.includes('session_recovery')).length, 1);
+  assert.equal(recoveryRequests(f).length, 1);
   assert.equal((await latestTurn(f.bridge, f.threadId)).rootTurnId, failed.rootTurnId || failed.id);
 });
 
@@ -124,6 +134,6 @@ test('real provider busy stream error recovers despite Codex classifying it as o
   await until(async () => (await latestTurn(f.bridge, f.threadId)).status === 'completed');
   // Completion resets the incident counter; count actual provider requests
   // instead of racing that bookkeeping on faster hosts.
-  assert.equal(f.state.requests.filter(r => r.body.includes('session_recovery')).length, 1);
+  assert.equal(recoveryRequests(f).length, 1);
   assert.equal((await latestTurn(f.bridge, f.threadId)).id, f.recovery.state.submitted_turn);
 });

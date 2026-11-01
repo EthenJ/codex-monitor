@@ -34,7 +34,7 @@ test('native installed plugin resolves its MCP cwd and UI resources from a diffe
     });
     server=(await bridge.rpc('mcpServerStatus/list',{threadId:thread,serverName:server.name})).data.find(x=>x.pluginId==='codex-monitor@codex-monitor');
     assert.equal(server.runtimeStatus,'connected',JSON.stringify({error:server.toolsError,notification:statuses.get(server.name)}));
-    assert.equal(Object.keys(server.tools).length,9);assert.ok(Object.values(server.tools).every(x=>x._meta.ui.resourceUri));
+    assert.equal(Object.keys(server.tools).length,11);assert.ok(Object.values(server.tools).every(x=>x._meta.ui.resourceUri));
     const r=await bridge.rpc('mcpServer/tool/call',{threadId:thread,server:server.name,tool:'monitor_report',arguments:{thread_id:thread}});
     assert.equal(r.isError,undefined);assert.equal(r.structuredContent.source,'empty');
     const resource=await bridge.rpc('mcpServer/resource/read',{threadId:thread,server:server.name,uri:server.resources[0].uri});

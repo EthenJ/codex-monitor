@@ -29,7 +29,7 @@ test('MCP disconnect/reconnect retains observer and launcher identity', { timeou
   try {
     const broker = await ensureBroker(state), original = await rpc(broker, 'status');
     assert.equal(await ensureBroker(state), broker); assert.equal((await rpc(broker, 'status')).service_pid, original.service_pid);
-    await open(); const tools = await client.listTools(); assert.equal(tools.tools.length, 9);
+    await open(); const tools = await client.listTools(); assert.equal(tools.tools.length, 11);
     const recoverySchema = tools.tools.find(x => x.name === 'monitor_recovery').inputSchema;
     assert.deepEqual(recoverySchema.properties.retry_mode.enum, ['transient', 'all_failed']);
     assert.ok(recoverySchema.properties.retry_interval_ms); assert.ok(recoverySchema.properties.max_elapsed_ms);

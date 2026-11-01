@@ -14,6 +14,7 @@ export const widgetHtml = String.raw`<!doctype html>
 </style></head><body>
 <header><h1>Codex Monitor</h1><span class="badge" id="connection">Snapshot</span></header>
 <article id="operation" hidden></article><p id="notice" class="muted" role="status">Waiting for a tool result…</p>
+<section id="event-card" class="list" aria-label="Triggered workload events" hidden></section>
 <section class="metrics" aria-label="Monitor counts" id="counts"></section>
 <div id="policy" class="details"></div><h2>Monitors</h2><section id="monitors" class="list"></section>
 <div class="toolbar"><h2>State changes</h2><button id="live" disabled>Start live updates</button></div>
@@ -40,9 +41,11 @@ export const widgetHtml = String.raw`<!doctype html>
     $('notice').textContent=r.verified?(r.warnings||[]).join(' '):'Saved state only — live supervision is not verified. '+(r.warnings||[]).join(' ');
     const recovery=r.recovery||{};
     $('policy').textContent='Wait: '+clean(r.wait?.state||'none')+' · Recovery: '+clean(recovery.state||'disabled')+(recovery.enabled?' · '+clean(recovery.attempts||0)+' attempts · retry every '+clean((recovery.policy?.retry_interval_ms||0)/1000)+' s · next '+date(recovery.next_retry_at):'');
-    $('monitors').replaceChildren(...(r.monitors||[]).map(m=>{const card=el('article'),row=el('div',undefined,'row');row.append(el('strong',m.name,'label'),el('span',m.state,'badge'));card.append(row,el('div','Deadline: '+date(m.deadline)+(m.latest_event?' · '+clean(m.latest_event.event_type):''),'details'));return card;}));
-    if(!r.monitors?.length)$('monitors').append(el('div','No monitors registered.','muted empty'));
-    $('timeline').replaceChildren(...[...(r.changes||[])].reverse().map(c=>{const card=el('article'),row=el('div',undefined,'row');row.append(el('strong',c.name||c.event_type||c.category,'label'),el('span',c.state,'badge'));card.append(row,el('div',(c.previous_state?clean(c.previous_state)+' → ':'')+clean(c.state)+(c.processing?' · '+clean(c.processing):''),'details'),el('small',date(c.at)+' · #'+clean(c.revision)));return card;}));
+    const verbose=r.display_mode==='verbose', monitors=(r.monitors||[]).filter(m=>verbose||['armed','starting','stopping','failed','unknown'].includes(m.state));
+    $('monitors').replaceChildren(...monitors.map(m=>{const card=el('article'),row=el('div',undefined,'row');row.append(el('strong',m.name,'label'),el('span',m.state,'badge'));card.append(row,el('div','Deadline: '+date(m.deadline)+(m.latest_event?' · '+clean(m.latest_event.event_type):''),'details'));return card;}));
+    if(!monitors.length)$('monitors').append(el('div','No active monitors.','muted empty'));
+    const changes=(r.changes||[]).filter(c=>verbose||!['starting','sending'].includes(c.state));
+    $('timeline').replaceChildren(...[...changes].reverse().slice(0,verbose?128:8).map(c=>{const card=el('article'),row=el('div',undefined,'row');row.append(el('strong',c.name||c.event_type||c.category,'label'),el('span',c.state,'badge'));card.append(row,el('div',(c.previous_state?clean(c.previous_state)+' → ':'')+clean(c.state)+(c.processing?' · '+clean(c.processing):''),'details'),el('small',date(c.at)+' · #'+clean(c.revision)));return card;}));
     if(!r.changes?.length)$('timeline').append(el('div','No recorded state changes.','muted empty'));
     if(r.changes_omitted)$('timeline').append(el('small',r.changes_omitted+' older changes omitted (bounded history).'));
     $('updated').textContent='Updated '+date(r.checked_at)+' · '+clean(r.source)+' · '+clean(r.thread_id);
@@ -55,6 +58,14 @@ export const widgetHtml = String.raw`<!doctype html>
       const data=view.result||{};const details=view.isError?(data.error?.message||data.error||'Request failed'):(data.state|| (data.valid===true?'Validation passed':data.valid===false?'Validation failed':''));
       if(details)card.append(el('div',details,view.isError?'details error-text':'details'));
       if(data.name)card.append(el('div',data.name,'details'));
+      const events=$('event-card');events.hidden=view.tool!=='monitor_event';events.replaceChildren();
+      if(view.tool==='monitor_event')for(const e of data.events||[]){
+        const alert=['watchdog_stalled','monitor_error','monitor_expired'].includes(e.event_type)||(e.event_type==='command_exit'&&e.evidence?.returncode!==0);
+        const item=el('article'),row=el('div',undefined,'row');
+        row.append(el('strong',e.name||e.monitor_id,'label'),el('span',e.actionable?'Needs review':e.state,'badge '+(alert?'warn':'ok')));
+        item.append(row,el('div',clean(e.event_type).replaceAll('_',' ')+(e.evidence?.returncode!==undefined?' · exit '+clean(e.evidence.returncode):''),'details'),el('small','Triggered '+date(e.occurred_at)));
+        events.append(item);
+      }
       if(view.report)render(view.report);
     }
     if(result?.structuredContent?.type==='monitor_report')render(result.structuredContent);

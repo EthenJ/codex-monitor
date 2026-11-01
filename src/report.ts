@@ -7,10 +7,12 @@ import { rpc } from './service.js';
 
 export const reportSchema = z.object({
   type: z.literal('monitor_report'), version: z.string(), thread_id: z.string(), checked_at: z.number(),
+  display_mode: z.enum(['compact', 'verbose']).optional(),
   source: z.enum(['live', 'saved', 'empty', 'unavailable']), verified: z.boolean(),
   revision: z.number(), changes: z.array(z.record(z.string(), z.unknown())), changes_omitted: z.number(),
   live_updates: z.boolean(),
-  summary: z.object({ active: z.number(), stopped: z.number(), failed_or_unknown: z.number(), unhandled_events: z.number() }),
+  summary: z.object({ active: z.number(), running: z.number(), starting: z.number(), stopping: z.number(),
+    stopped: z.number(), failed_or_unknown: z.number(), unhandled_events: z.number() }),
   monitors: z.array(z.record(z.string(), z.unknown())), events: z.array(z.record(z.string(), z.unknown())),
   omitted: z.object({ monitors: z.number(), events: z.number() }),
   wait: z.record(z.string(), z.unknown()).nullable(), recovery: z.record(z.string(), z.unknown()),
@@ -29,7 +31,11 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
     checked_at: now(), source, verified, revision: snapshot.revision || 0, changes: (snapshot.changes || []).slice(-128),
     live_updates: source === 'live' && Number.isSafeInteger(snapshot.revision),
     changes_omitted: Math.max(0, (snapshot.revision || 0) - (snapshot.changes || []).length),
-    summary: { active: records.filter(x => active.has(x.state)).length, stopped: records.filter(x => x.state === 'stopped').length,
+    summary: { active: records.filter(x => active.has(x.state)).length,
+      running: records.filter(x => x.state === 'armed').length,
+      starting: records.filter(x => x.state === 'starting').length,
+      stopping: records.filter(x => x.state === 'stopping').length,
+      stopped: records.filter(x => x.state === 'stopped').length,
       failed_or_unknown: records.filter(x => ['failed', 'unknown'].includes(x.state)).length, unhandled_events: pending.length },
     monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), state: x.state, deadline: x.deadline,
       latest_event: x.latest_event, outcome: x.outcome?.reason,
@@ -41,6 +47,16 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
       next_retry_at: r.next_retry_at ?? null, deadline: r.deadline,
       ...(r.enabled ? { stop: { tool: 'monitor_recovery', enabled: false } } : {}) },
     warnings: verified ? [] : ['Service unavailable. Saved states are historical and do not establish that observers or recovery are currently running.'] };
+}
+// Human-facing end-of-turn output. Detailed history stays in structured status.
+export function compactReport(report: Json): string {
+  if (!report.verified) return 'Monitor · live status unavailable';
+  const { running, starting, stopping } = report.summary;
+  const parts = [running ? `${running} running` : 'none running'];
+  if (starting) parts.push(`${starting} starting`);
+  if (stopping) parts.push(`${stopping} stopping`);
+  if (report.recovery?.enabled) parts.push('auto-retry on');
+  return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId: string, after: number, waitMs: number, signal?: AbortSignal, root = stateRoot()) {
   try { return summarize(await rpc(path.join(root, threadKey(threadId)), 'report_wait', { after_revision: after, wait_ms: waitMs }, waitMs + 2000, signal), 'live'); }

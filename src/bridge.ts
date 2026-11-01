@@ -6,6 +6,7 @@ import { existsSync, globSync } from 'node:fs';
 import path from 'node:path';
 import { owned, Owned } from './processes.js';
 import { Json, VERSION } from './common.js';
+import { eventText } from './event-text.js';
 
 export class RpcError extends Error {
   constructor(message: string, public uncertain = false, public code?: number) { super(message); }
@@ -129,5 +130,5 @@ export async function latestTurn(bridge: BridgeLike, threadId: string) {
 export async function submit(bridge: BridgeLike, threadId: string, payload: Json, rootTurnId?: string) {
   await loaded(bridge, threadId);
   return bridge.rpc('turn/start', { threadId, input: [], ...(rootTurnId ? { rootTurnId } : {}),
-    toolOutput: { name: 'monitor_event', namespace: 'codex_monitor', output: JSON.stringify(payload), retain: true } });
+    toolOutput: { name: 'monitor_event', namespace: 'codex_monitor', output: eventText(payload), retain: true } });
 }

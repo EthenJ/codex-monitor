@@ -67,6 +67,8 @@ for (const surface of ['exec', 'app-server']) test(surface === 'exec' ? 'real tr
   if (surface === 'exec') {
     const recorded = JSON.parse(await readFile(marker, 'utf8'));
     assert.equal(recorded.input.hook_event_name, 'Stop');
-    assert.equal(JSON.parse(recorded.result.systemMessage).result.thread_id, recorded.input.session_id);
+    assert.match(recorded.input.session_id, /^[0-9a-f-]{36}$/);
+    assert.equal(recorded.result.systemMessage, 'Monitor · none running');
+    assert.deepEqual(Object.keys(recorded.result), ['systemMessage']);
   }
 });

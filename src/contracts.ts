@@ -5,6 +5,10 @@ const int = (min: number, max: number) => z.number().int().min(min).max(max);
 const week = 604800000;
 export const eventSchema = z.enum(['command_output', 'file_change', 'command_exit', 'process_exit', 'watchdog_stalled', 'watchdog_recovered', 'monitor_error', 'monitor_expired']);
 export const defaultEvents = eventSchema.options.filter(x => x !== 'watchdog_recovered');
+export const eventReviewSchema = z.strictObject({
+  event_ids: z.array(z.string().uuid()).min(1).max(8).describe('Exact IDs from the native callback; at most eight events.'),
+  resolution: str(1000).optional().describe('Omit to inspect. Supply only after handling or deliberately dismissing these events; acknowledges them and returns final status.'),
+});
 const shared = {
   cwd: str().describe('Absolute workload directory. Relative watched paths resolve here.'),
   timeout_ms: int(1, week).optional().describe('Finite observer lifetime in milliseconds; default 1800000.'),

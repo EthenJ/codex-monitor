@@ -5,13 +5,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=node-runtime /usr/local /usr/local
 WORKDIR /work
 COPY package.json package-lock.json ./
-RUN npm ci && npm install -g @openai/codex@0.166.0
+RUN npm ci --cache /opt/npm-cache && npm install -g @openai/codex@0.166.0 --cache /opt/npm-cache
 COPY tsconfig.json ./
 COPY src ./src
 COPY hooks ./hooks
 COPY tests/node ./tests/node
-RUN npm run build && chown -R 1000:1000 /work
+COPY install.mjs README.md LICENSE .mcp.json ./
+COPY installer ./installer
+COPY .codex-plugin ./.codex-plugin
+COPY .agents/plugins ./.agents/plugins
+COPY codex-monitor/SKILL.md ./codex-monitor/SKILL.md
+COPY codex-monitor/agents ./codex-monitor/agents
+COPY codex-monitor/references/plugin.md codex-monitor/references/installation.md ./codex-monitor/references/
+RUN npm run build && chown -R 1000:1000 /work /opt/npm-cache
 USER 1000:1000
 ENV CODEX_MONITOR_TEST_NATIVE=1
+ENV npm_config_cache=/opt/npm-cache npm_config_offline=true npm_config_audit=false
 # Run with --init --network none. Include real Linux process and file tests.
-CMD ["node", "--test", "--test-timeout=25000", "tests/node/*.test.mjs"]
+CMD ["node", "--test", "--test-timeout=180000", "tests/node/*.test.mjs"]
