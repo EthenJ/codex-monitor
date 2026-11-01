@@ -2,7 +2,7 @@
 
 A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
 
-Version **0.2.2** adds typed MCP configuration, preflight validation and structured status reports at turn end. Fixed-interval recovery and optional coverage of unlisted failures from 0.2.1 are preserved.
+Version **0.2.2** adds typed MCP configuration, preflight validation, native result cards, an optional live status panel and structured status reports at turn end. Fixed-interval recovery and optional coverage of unlisted failures from 0.2.1 are preserved.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
@@ -42,6 +42,8 @@ Tools: `monitor_start`, `monitor_validate`, `monitor_report`, `monitor_status`, 
 MCP clients discover parameter types, ranges and enums through `tools/list`. `monitor_start` infers command/watchdog mode and applies finite defaults. Commands without `match` report exit only. Start automatically checks configuration and local prerequisites. Use `monitor_validate` to preview normalized settings and verify the exact loaded host thread without starting a workload or recovery. See [minimal examples and validation](codex-monitor/references/plugin.md#typed-configuration-and-preflight).
 
 `monitor_report` returns a compact structured tool result. Bundled `Stop` and `Interrupt` hooks automatically emit the same report through the host's hook status message, without waking the model. Review and trust the installed hooks in `/hooks`; installation alone does not trust hooks. Client rendering varies, and `codex exec --json` may omit hook messages. No new turn is submitted merely to show status.
+
+All nine tools include readable summaries and an MCP Apps view. On compatible hosts, `monitor_report` opens a live panel with workload counts, recovery state and the latest 128 lifecycle transitions; other operation cards offer live updates on demand. The panel waits for changes through bounded MCP calls without involving the agent. Hidden views stop re-arming, and disconnected views require explicit reconnection. Background transitions update the timeline; independent native chat cards still require a real tool call. Hosts without MCP Apps retain text and structured results. Codex 0.166.0 exposes MCP Apps behind the experimental `enable_mcp_apps` feature.
 
 Commands are owned and cleaned up on cancellation. Watchdogs never terminate existing training PIDs. File/GPU rules support startup grace, dwell times, aggregation and recovery hysteresis. Native file notifications and local GPU/PID sampling do not wake the model. Read [usage and lifecycle contracts](codex-monitor/references/plugin.md).
 

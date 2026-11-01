@@ -20,6 +20,12 @@ Run bootstrap from an external terminal once per login/reboot. Its hidden launch
 
 ## Tools and state
 
+All nine MCP tools return a readable result card, their original structured data, and an optional MCP Apps view. `monitor_report` opens a live status panel on compatible hosts; other operation cards offer a button to start live updates. The timeline records monitor creation/arming/stopping, event delivery and acknowledgement, goal waits and recovery changes. History is capped at 128 transitions, with an explicit omitted count. Routine health samples are not lifecycle transitions.
+
+The panel uses `monitor_report(after_revision, wait_ms)` with a bounded event wait (up to 25 seconds), then re-arms in the UI. This is long polling at the transport layer, not model-side polling or a model wakeup. There is at most one outstanding request per view and 32 per thread. Hidden/closed views stop re-arming; disconnects stop live mode until explicitly retried. Reports never launch an observer, enable recovery or submit a turn. Legacy services and hosts without MCP Apps retain snapshot/text results. Background changes cannot create arbitrary native chat items: they update the panel history, and the normal callback turn's tool calls render event cards. Stop/Interrupt hook messages remain host-controlled informational output.
+
+To enable automatic stop reports, review and trust the installed plugin's exact Stop and Interrupt definitions using Codex `/hooks`. When the user has authorized this setup, the agent may complete that supported UI flow without asking again. The plugin never grants itself trust or bypasses Codex's trust enforcement. Hosts may require MCP Apps support to be enabled before displaying the HTML view.
+
 | Tool | Purpose |
 | --- | --- |
 | `monitor_start` | Register an observer; return readiness and deadline |

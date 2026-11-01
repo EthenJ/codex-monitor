@@ -3,8 +3,8 @@
     "monitor": {
       "type": "stdio",
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/codex-monitor/runtime/server.js"],
-      "cwd": "${PLUGIN_ROOT}"
+      "args": ["codex-monitor/runtime/server.js"],
+      "cwd": "."
     }
   }
 }

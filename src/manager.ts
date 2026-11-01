@@ -6,11 +6,12 @@ import { Bridge, BridgeLike, getGoal, loaded, sameGoal, submit } from './bridge.
 import { Sensor, startSensor } from './sensors.js';
 import { validateRequest, ValidationFailure } from './validation.js';
 import { Recovery } from './recovery.js';
+import { Changes } from './changes.js';
 
 const PENDING = new Set(['pending', 'sending', 'unknown']);
 export class Manager {
   records: Record<string, Json> = {}; events: Record<string, Json> = {}; wait: Json | null = null;
-  jobs = new Map<string, Sensor>(); recovery: Recovery;
+  jobs = new Map<string, Sensor>(); recovery: Recovery; changes: Changes;
   lastUsed = now(); closed = false;
   private bridge?: BridgeLike; private connecting?: Promise<BridgeLike>; private flushTimer?: NodeJS.Timeout;
   private sending = false; private operations = serial(); private connectFactory: () => Promise<BridgeLike>;
@@ -19,6 +20,7 @@ export class Manager {
     threadKey(threadId); this.connectFactory = options.connect || (() => Bridge.connect());
     let old: Json = {};
     if (existsSync(path.join(directory, 'state.json'))) old = readJson(path.join(directory, 'state.json'));
+    this.changes = new Changes(old);
     this.records = old.monitors || {}; this.events = old.events || {}; this.wait = old.wait || null; this.sequence = old.sequence || 0;
     for (const record of Object.values(this.records)) if (['starting', 'armed', 'stopping'].includes(record.state)) { record.state = 'unknown'; record.error = 'Service restarted; observer not rearmed'; }
     for (const event of Object.values(this.events)) if (PENDING.has(event.state)) { event.state = 'unknown'; event.error = 'Service restarted; inspect before replay'; }
@@ -27,12 +29,19 @@ export class Manager {
     this.gcTimer = setInterval(() => this.expire(), 1000);
     this.save();
   }
-  save() { atomicJson(path.join(this.directory, 'state.json'), { version: VERSION, thread_id: this.threadId, sequence: this.sequence, monitors: this.records, events: this.events, wait: this.wait, recovery: this.recovery?.state }); }
+  save() {
+    const data = { version: VERSION, thread_id: this.threadId, sequence: this.sequence, monitors: this.records,
+      events: this.events, wait: this.wait, recovery: this.recovery?.state };
+    const changed = this.changes.update(data);
+    atomicJson(path.join(this.directory, 'state.json'), { ...data, revision: this.changes.revision, changes: this.changes.entries });
+    if (changed) this.changes.notify();
+  }
   snapshot(monitorId?: string) {
     this.lastUsed = now();
     if (monitorId && !Object.hasOwn(this.records, monitorId)) throw Error('Unknown monitor ID');
     const records = monitorId ? [this.records[monitorId]] : Object.values(this.records);
     return structuredClone({ version: VERSION, thread_id: this.threadId, checked_at: now(), service_pid: process.pid,
+      revision: this.changes.revision, changes: this.changes.entries,
       monitors: records.map(r => monitorId ? r : { id: r.id, name: r.name, kind: r.kind, state: r.state, deadline: r.deadline, backend: r.backend,
         observed_pid: r.observed_pid, latest_event: r.latest_event, error: r.error, outcome: r.outcome }),
       events: Object.values(this.events).filter(e => !monitorId || e.monitor_id === monitorId).map(e => monitorId ? e : {
@@ -203,7 +212,7 @@ export class Manager {
     if (this.wait?.monitor_ids.includes(monitorId) && ['waiting', 'waking', 'preparing'].includes(this.wait.state)) await this.cancelWait();
     record.muted = true;
     for (const event of Object.values(this.events)) if (event.monitor_id === monitorId && event.state === 'pending') event.state = 'suppressed';
-    if (this.jobs.has(monitorId)) { record.state = 'stopping'; await this.jobs.get(monitorId)!.stop(); }
+    if (this.jobs.has(monitorId)) { record.state = 'stopping'; this.save(); await this.jobs.get(monitorId)!.stop(); }
     this.save(); return structuredClone(record);
   }
   async flush() {
@@ -261,7 +270,7 @@ export class Manager {
   async configureRecovery(params: Json) { return this.recovery.configure(params); }
   isIdle() { return !this.jobs.size && !this.sending && !this.recovery.state.enabled && !['waiting', 'waking', 'preparing'].includes(this.wait?.state || '') && !Object.values(this.events).some(e => ['pending', 'sending'].includes(e.state)); }
   async close() {
-    this.closed = true; clearTimeout(this.flushTimer); clearInterval(this.gcTimer); this.recovery.close();
+    this.closed = true; this.changes.close(); clearTimeout(this.flushTimer); clearInterval(this.gcTimer); this.recovery.close();
     await Promise.allSettled([...this.jobs.values()].map(job => job.stop('service_shutdown')));
     await this.bridge?.close(); this.save();
   }

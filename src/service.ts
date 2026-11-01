@@ -5,15 +5,15 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { atomicJson, bounded, delay, Json, now, readJson, stateRoot, threadKey, VERSION } from './common.js';
+import { atomicJson, bounded, delay, integer, Json, now, readJson, stateRoot, threadKey, VERSION } from './common.js';
 import { launchWindowsDetached } from './windows.js';
 import { Manager } from './manager.js';
 
-export async function rpc(directory: string, method: string, params: Json = {}, timeout = 20000): Promise<any> {
+export async function rpc(directory: string, method: string, params: Json = {}, timeout = 20000, signal?: AbortSignal): Promise<any> {
   const endpoint = readJson(path.join(directory, 'endpoint.json'));
   const response = await fetch(`http://127.0.0.1:${endpoint.port}/rpc`, { method: 'POST',
     headers: { Authorization: `Bearer ${endpoint.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method, params }), signal: AbortSignal.timeout(timeout) });
+    body: JSON.stringify({ method, params }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
   const result = await response.json() as Json;
   if (!response.ok || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {});
   return result.result;
@@ -116,6 +116,15 @@ export async function serve(directory: string, threadId?: string) {
         manager.lastUsed = now();
         switch (method) {
           case 'status': result = manager.snapshot(params.monitor_id); break;
+          case 'report_wait': {
+            const after = integer(params.after_revision, 'after_revision', 0, Number.MAX_SAFE_INTEGER);
+            const timeout = integer(params.wait_ms, 'wait_ms', 1, 25000);
+            const controller = new AbortController(), abort = () => controller.abort();
+            response.once('close', abort);
+            try { await manager.changes.wait(after, timeout, controller.signal); result = manager.snapshot(); }
+            finally { response.off('close', abort); }
+            break;
+          }
           case 'start': result = await manager.start(params); break;
           case 'stop': result = await manager.stop(params.monitor_id); break;
           case 'wait': result = await manager.beginWait(params); break;

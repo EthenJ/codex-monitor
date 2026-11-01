@@ -8,6 +8,8 @@ import { rpc } from './service.js';
 export const reportSchema = z.object({
   type: z.literal('monitor_report'), version: z.string(), thread_id: z.string(), checked_at: z.number(),
   source: z.enum(['live', 'saved', 'empty', 'unavailable']), verified: z.boolean(),
+  revision: z.number(), changes: z.array(z.record(z.string(), z.unknown())), changes_omitted: z.number(),
+  live_updates: z.boolean(),
   summary: z.object({ active: z.number(), stopped: z.number(), failed_or_unknown: z.number(), unhandled_events: z.number() }),
   monitors: z.array(z.record(z.string(), z.unknown())), events: z.array(z.record(z.string(), z.unknown())),
   omitted: z.object({ monitors: z.number(), events: z.number() }),
@@ -24,7 +26,9 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
   const r = snapshot.recovery || { enabled: false, state: 'disabled' };
   const verified = source === 'live' || source === 'empty';
   return { type: 'monitor_report', version: snapshot.version || VERSION, thread_id: snapshot.thread_id,
-    checked_at: now(), source, verified,
+    checked_at: now(), source, verified, revision: snapshot.revision || 0, changes: (snapshot.changes || []).slice(-128),
+    live_updates: source === 'live' && Number.isSafeInteger(snapshot.revision),
+    changes_omitted: Math.max(0, (snapshot.revision || 0) - (snapshot.changes || []).length),
     summary: { active: records.filter(x => active.has(x.state)).length, stopped: records.filter(x => x.state === 'stopped').length,
       failed_or_unknown: records.filter(x => ['failed', 'unknown'].includes(x.state)).length, unhandled_events: pending.length },
     monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), state: x.state, deadline: x.deadline,
@@ -37,6 +41,14 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
       next_retry_at: r.next_retry_at ?? null, deadline: r.deadline,
       ...(r.enabled ? { stop: { tool: 'monitor_recovery', enabled: false } } : {}) },
     warnings: verified ? [] : ['Service unavailable. Saved states are historical and do not establish that observers or recovery are currently running.'] };
+}
+export async function waitReport(threadId: string, after: number, waitMs: number, signal?: AbortSignal, root = stateRoot()) {
+  try { return summarize(await rpc(path.join(root, threadKey(threadId)), 'report_wait', { after_revision: after, wait_ms: waitMs }, waitMs + 2000, signal), 'live'); }
+  catch (e) {
+    if (signal?.aborted) throw e;
+    const report = await readReport(threadId, root);
+    return { ...report, live_updates: false, warnings: [...report.warnings, 'Live updates unavailable; reconnect explicitly to try again.'] };
+  }
 }
 export async function readReport(threadId: string, root = stateRoot(), timeout = 1200) {
   const directory = path.join(root, threadKey(threadId));
