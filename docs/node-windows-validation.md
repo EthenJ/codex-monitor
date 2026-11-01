@@ -8,7 +8,7 @@ Windows, Node 24.22.0, Codex 0.166.0: **132 tests, 126 passed, six expected skip
 
 The suite includes real Codex registration and replacement from both an isolated source checkout and a deployment package. Tests verify paths containing spaces/Unicode, UTF-8 BOM answers, a previously nonexistent Codex home, preview behavior, both hook choices, actual MCP tool execution and default display settings. It also verifies launcher replacement, preservation of unrelated configuration, active-monitor refusal and dependency/registration failure behavior. Synthetic local providers exercise native events, hooks and recovery without user credentials or paid models.
 
-The current user installation is not replaced by these tests. Interactive terminal acceptance in a new user session remains the next check. Desktop HTML rendering, the new installer on Ubuntu/macOS and current physical GPU acceptance remain unverified.
+The user subsequently reinstalled the plugin successfully. Fresh discovery and actual execution verified the new tools, native callback, and both trusted reporting hooks. The final CI run also passed Ubuntu container installation and replacement. Desktop HTML rendering, manual macOS installation and current physical GPU acceptance remain unverified.
 
 ## Run the suite
 
