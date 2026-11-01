@@ -6,6 +6,7 @@ import { existsSync, globSync } from 'node:fs';
 import path from 'node:path';
 import { owned } from './processes.js';
 import { VERSION } from './common.js';
+import { eventText } from './event-text.js';
 export class RpcError extends Error {
     uncertain;
     code;
@@ -173,5 +174,5 @@ export async function latestTurn(bridge, threadId) {
 export async function submit(bridge, threadId, payload, rootTurnId) {
     await loaded(bridge, threadId);
     return bridge.rpc('turn/start', { threadId, input: [], ...(rootTurnId ? { rootTurnId } : {}),
-        toolOutput: { name: 'monitor_event', namespace: 'codex_monitor', output: JSON.stringify(payload), retain: true } });
+        toolOutput: { name: 'monitor_event', namespace: 'codex_monitor', output: eventText(payload), retain: true } });
 }

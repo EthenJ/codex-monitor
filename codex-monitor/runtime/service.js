@@ -5,20 +5,20 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { atomicJson, bounded, delay, now, readJson, stateRoot, threadKey, VERSION } from './common.js';
+import { atomicJson, bounded, delay, integer, now, readJson, stateRoot, threadKey, VERSION } from './common.js';
 import { launchWindowsDetached } from './windows.js';
 import { Manager } from './manager.js';
-export async function rpc(directory, method, params = {}, timeout = 20000) {
+export async function rpc(directory, method, params = {}, timeout = 20000, signal) {
     const endpoint = readJson(path.join(directory, 'endpoint.json'));
     const response = await fetch(`http://127.0.0.1:${endpoint.port}/rpc`, { method: 'POST',
         headers: { Authorization: `Bearer ${endpoint.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ method, params }), signal: AbortSignal.timeout(timeout) });
+        body: JSON.stringify({ method, params }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
     const result = await response.json();
     if (!response.ok || result.error)
-        throw Error(result.error || 'Local monitor request failed');
+        throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {});
     return result.result;
 }
-async function lock(directory, operation) {
+export async function withStartupLock(directory, operation) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const location = path.join(directory, 'startup.lock-node');
     const deadline = now() + 12000;
@@ -44,8 +44,16 @@ async function lock(directory, operation) {
                 }
             }
             catch {
-                if (now() - (await stat(location)).mtimeMs > 30000)
-                    throw Error('Stale startup lock without verifiable owner; inspect state');
+                // The owner can release the directory between mkdir/readFile/stat.
+                // A missing lock is contention that ended, not a failed startup.
+                try {
+                    if (now() - (await stat(location)).mtimeMs > 30000)
+                        throw Error('Stale startup lock without verifiable owner; inspect state');
+                }
+                catch (error) {
+                    if (error.code !== 'ENOENT')
+                        throw error;
+                }
             }
             if (now() >= deadline)
                 throw Error('Monitor startup lock busy');
@@ -95,7 +103,7 @@ async function reachable(directory) {
 }
 export async function ensureBroker(root = stateRoot()) {
     const directory = path.join(root, 'broker');
-    await lock(directory, async () => { if (!await reachable(directory))
+    await withStartupLock(directory, async () => { if (!await reachable(directory))
         await launch(directory); });
     return directory;
 }
@@ -115,7 +123,7 @@ export async function ensureService(threadId, root = stateRoot(), useBroker = tr
     // Only the external broker calls this with useBroker=false. Its children are
     // already independent of the MCP host; a second job breakaway is unnecessary
     // and can be denied by an enclosing Windows runner/job policy.
-    await lock(directory, async () => { if (!await reachable(directory))
+    await withStartupLock(directory, async () => { if (!await reachable(directory))
         await launch(directory, threadId, useBroker); });
     return directory;
 }
@@ -172,6 +180,20 @@ export async function serve(directory, threadId) {
                     case 'status':
                         result = manager.snapshot(params.monitor_id);
                         break;
+                    case 'report_wait': {
+                        const after = integer(params.after_revision, 'after_revision', 0, Number.MAX_SAFE_INTEGER);
+                        const timeout = integer(params.wait_ms, 'wait_ms', 1, 25000);
+                        const controller = new AbortController(), abort = () => controller.abort();
+                        response.once('close', abort);
+                        try {
+                            await manager.changes.wait(after, timeout, controller.signal);
+                            result = manager.snapshot();
+                        }
+                        finally {
+                            response.off('close', abort);
+                        }
+                        break;
+                    }
                     case 'start':
                         result = await manager.start(params);
                         break;
@@ -186,6 +208,9 @@ export async function serve(directory, threadId) {
                         break;
                     case 'ack':
                         result = await manager.acknowledge(params);
+                        break;
+                    case 'event':
+                        result = await manager.reviewEvent(params);
                         break;
                     case 'recovery':
                         result = await manager.configureRecovery(params);
@@ -204,7 +229,7 @@ export async function serve(directory, threadId) {
         }
         catch (e) {
             response.setHeader('Content-Type', 'application/json');
-            response.end(JSON.stringify({ error: bounded(e) }));
+            response.end(JSON.stringify({ error: bounded(e), ...(e.report ? { validation: e.report } : {}) }));
         }
         finally {
             requests--;
