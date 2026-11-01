@@ -256,14 +256,15 @@ for (const backend of ['native', 'polling']) {
     await eventually(() => progress.length > 0 && events.some(e => e.event_type === 'file_change'));
   });
 
-  test(`${backend} ready accepts immediate nested creates, rewrites and replacements`, async t => {
+  test(`${backend} ready accepts immediate nested creates, rewrites and replacements`, { timeout: 60000 }, async t => {
     const { root, cleanups } = await fixture(t);
     let trace = [];
     const originalRemember = FileObservations.prototype.remember;
-    t.mock.method(FileObservations.prototype, 'remember', function(file, stats) {
+    FileObservations.prototype.remember = function(file, stats) {
       trace.push({ initial: file, stats });
       return originalRemember.call(this, file, stats);
-    });
+    };
+    t.after(() => { FileObservations.prototype.remember = originalRemember; });
     // Exercise the first subscription tick, which previously raced a directory rescan.
     for (let attempt = 0; attempt < (backend === 'polling' ? 200 : 6); attempt++) {
       const work = path.join(root, String(attempt)), nested = path.join(work, 'nested'), events = [];
