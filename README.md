@@ -1,106 +1,112 @@
-# codex-monitor
+# Codex Monitor
 
-A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
+A Node.js plugin that watches external work and wakes the same Codex conversation
+when an event needs attention. The agent can continue independent work or wait
+for a callback instead of repeatedly checking logs.
 
-Version **0.2.3** fixes callbacks that could bypass a manually paused goal, makes conditional pause/resume respect later user actions, and distinguishes a confirmed goal pause from notification-only waiting. Interactive installation, compact reports and configurable session recovery remain available.
-
-The refreshed v0.2.3 also refuses a false waiting handoff while a goal is still active: `monitor_wait` requires the applicable pause/resume authorization and confirms the native pause before the agent yields. It checks all unhandled events and live fallback guards before pausing. Early events remain queued until the current turn ends and the host is verified idle; any monitor in the same conversation can then resume the goal. Follow-up messages can refresh a verified plugin-owned wait without a second pause; manual or unverified pauses remain paused. A running-monitor count alone never means the goal is paused. Reinstall if you installed the earlier v0.2.3 package.
-
-Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
-
-## Install
-
-Requires Node.js 22.22+ (24 recommended), npm, Codex CLI 0.166.0+ and a compatible local Codex daemon. Validated with Codex 0.166.0.
-
-From the complete repository or extracted release package, run in a normal terminal:
-
-```text
-node install.mjs
-```
-
-The wizard asks for the Codex configuration directory, client, compact/verbose output, automatic Stop/Interrupt reports and launcher startup. It shows the plan before installing. An existing installation requires an explicit replacement choice. Use `node install.mjs --dry-run` to preview, or [agent-assisted configuration](codex-monitor/references/installation.md#preview-or-install-from-an-agent-session) for a noninteractive shell.
-
-Setup builds a source checkout when necessary, stages a complete deployment bundle, installs production dependencies, and executes an isolated MCP probe before registering the plugin. It preserves monitor state and unrelated Codex settings. It refuses to replace an installation with active monitors, waits, recovery or unresolved pending deliveries; reconcile those first. Avoid starting monitors during an upgrade. Recovery is not enabled by installation.
-
-Finish installation, then fully reopen Codex to load all eleven tools. Check `/plugins` and `/mcp`, and ask Codex to actually call `monitor_display` in the resumed conversation. If reports were included, review this plugin's exact hooks in `/hooks`. Installing does not grant hook trust; changing the installed bundle after review invalidates its fingerprint. The launcher must be started again after login/reboot from an external terminal; no OS service is installed. Setup prints the exact command and activation checklist. See the [installation guide](codex-monitor/references/installation.md) for simulation and upgrade details.
-
-For manual installation of a deployment package, run `npm ci --omit=dev`, `npm run bootstrap`, `codex plugin marketplace add .`, and `codex plugin add codex-monitor@codex-monitor`, then follow the same activation checklist. Build a source checkout with `npm ci` and `npm run build` first. When upgrading from v0.1, stop its standalone observers and disable/remove the old skill to avoid duplicate callbacks. The Node plugin has no Python runtime dependency; native bindings use Koffi's published prebuilt binaries where available.
-
-## Typical request
-
-> Monitor training progress and process exit. Alert if metrics stop changing and GPU utilization stays low. Prepare evaluation while training runs. When only training remains, pause the goal and resume it on completion or an alert. Retry transient conversation network failures with a finite budget, but never resume after I manually interrupt or pause.
+Supports command completion and output matching, file/directory changes, process
+exit, training inactivity and NVIDIA GPU utilization. It also provides authorized
+goal pause/resume and optional recovery after conversation errors. No Codex source
+build, Python runtime or separate model API key is required.
 
 ## How it works
 
-1. `monitor_start` registers an observer and confirms readiness.
-2. A separate per-thread Node service watches the workload without calling the model for healthy progress.
-3. Events are saved, filtered for duplicates/expiry and submitted through `turn/start.toolOutput` to the existing daemon.
-4. Codex uses `monitor_event` to inspect the trigger and evidence, then supplies a resolution after handling. The same card acknowledges the events and reports current status. Pending results already handled independently are suppressed.
-5. Before waiting, `monitor_wait` checks all unresolved thread events and live observers with finite error/expiry fallbacks. With authorization it confirms native goal pause, holds early events until the calling turn ends and the host is idle, then resumes on any monitor event in the same conversation.
+1. Codex registers a finite observer through the plugin's typed MCP tools.
+   Configuration and local prerequisites are validated before observation starts.
+2. A background Node.js service watches the workload. Healthy progress and local
+   sensor sampling do not invoke the model.
+3. Relevant events are saved and delivered through the existing local Codex
+   daemon as native tool outputs to the original conversation.
+4. The agent inspects the evidence, performs the registered action and
+   acknowledges the event. Trusted Stop/Interrupt hooks report a concise running
+   count when the turn ends, without a separate agent reporting call.
 
-Manual goal pause holds ordinary callbacks locally until resume; event expiry still applies. An explicitly authorized wait defaults to all monitors in the same conversation, including new sources; `wake_scope: "selected"` explicitly narrows it. Pause does not interrupt an already-running turn or tool: the agent must finish its status report and yield. Later user edits and disconnects cancel conditional restoration and require reconciliation. See [goal waiting details](codex-monitor/references/plugin.md#native-goal-waiting).
+When only monitored work remains, `monitor_wait` can pause the native goal with
+the user's pause/resume authorization. It checks unresolved events and live
+fallback guards, confirms the pause, and holds early events until the current
+turn has ended. A subsequent eligible event resumes the same goal. Manual pauses,
+interruptions and later goal changes take precedence; the plugin retains the
+native goal interface and budget.
 
-Tools: `monitor_start`, `monitor_event`, `monitor_display`, `monitor_validate`, `monitor_report`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
+Stopping a command monitor terminates its owned command tree. A watchdog observes
+an existing workload and never terminates its PID. Native callbacks require the
+same loaded local Codex daemon. CLI output is text; graphical panels depend on
+client support.
 
-MCP clients discover parameter types, ranges and enums through `tools/list`. `monitor_start` infers command/watchdog mode and applies finite defaults. Commands without `match` report exit only. Start automatically checks configuration and local prerequisites. Use `monitor_validate` to preview normalized settings and verify the exact loaded host thread without starting a workload or recovery. See [minimal examples and validation](codex-monitor/references/plugin.md#typed-configuration-and-preflight).
+## Installation
 
-`monitor_report` displays one human-readable line, such as `Monitor · 2 running` or `Monitor · none running`. Bundled `Stop` and `Interrupt` hooks emit the same concise summary without waking the model. Cancelled/stopped monitors and lifecycle history are omitted from routine text; details remain in structured tool data and `monitor_status`. Unverified saved state is reported as unavailable, never as currently running. The skill guides agents to stop obsolete observers and acknowledge handled events while preserving monitoring for pending work. Review and trust the installed hooks in `/hooks`; installation alone does not trust hooks. Client rendering varies, and `codex exec --json` may omit hook messages. No new turn is submitted merely to show status.
+Requires Node.js **22.22+** (24 recommended), npm, Codex CLI **0.166.0+** and a
+compatible local Codex daemon. Tested on Windows and Ubuntu with Codex 0.166.0.
+GPU monitoring additionally requires working `nvidia-smi`.
 
-Complete every build, dependency installation and file copy before reviewing hooks. Codex fingerprints the entire installed plugin bundle; modifying it afterward can cause `plugin contents changed; hook approval required`. Review the updated hooks again, then verify a fresh scan and execution. Cached trust metadata in an already-loaded thread is insufficient; see the [installation reference](codex-monitor/references/plugin.md).
+Download and extract a complete package from [Releases](https://github.com/EthenJ/codex-monitor/releases),
+or clone the repository. Run from its directory in a normal terminal:
 
-All eleven tools include readable summaries and an MCP Apps view. On compatible hosts, `monitor_report` opens a live panel with workload counts, recovery state and bounded lifecycle transitions; other operation cards offer live updates on demand. `monitor_event` highlights the selected triggers, including exit status and whether action is still needed. Compact mode omits inactive monitors and shows the latest eight relevant transitions; verbose displays the full bounded history. The panel waits for changes through bounded MCP calls without involving the agent. Hidden views stop re-arming, and disconnected views require explicit reconnection. Background transitions update the timeline; independent native chat cards still require a real tool call. Hosts without MCP Apps retain text and structured results. Codex 0.166.0 exposes MCP Apps behind the experimental `enable_mcp_apps` feature.
-
-Codex CLI 0.166.0 displays text tool results, not the HTML panel. All tools therefore use plain-text cards without Markdown tables or duplicate JSON. `monitor_display(thread_id, mode: "compact" | "verbose")` selects the workflow per thread without restarting. Compact is the default: start/stop and event cards carry fresh status, so the agent can omit redundant diagnostic and final-report calls. The previous four-call callback sequence becomes an event inspection followed by one combined acknowledgement/status card; already-inspected events can use the combined call alone. Verbose retains separate status/ack/report calls and adds diagnostic details. Errors remain visible in either mode. Every actual call still has the CLI's host-owned `Called` header; the plugin cannot hide or merge those headers. Enabling the engine's MCP Apps flag does not add an HTML renderer to the terminal. The optional desktop panel remains separately unverified. See the [validation evidence](https://github.com/EthenJ/codex-monitor/blob/develop/docs/releases/v0.2.2.md#validation).
-
-Native event callbacks also use readable text with exact monitor/event references. Raw workload evidence and registered actions are retrieved through `monitor_status`, rather than printed in the notification. Recovery notifications identify the retry attempt and failed turn. Event delivery still uses the native tool-output channel.
-
-Commands are owned and cleaned up on cancellation. Watchdogs never terminate existing training PIDs. File/GPU rules support startup grace, dwell times, aggregation and recovery hysteresis. Native file notifications and local GPU/PID sampling do not wake the model. Read [usage and lifecycle contracts](codex-monitor/references/plugin.md).
-
-## Recovery
-
-Recovery is opt-in. Each eligible failure waits a **fixed 300 seconds** before the next attempt, with a **three-hour limit per incident**. Configure `retry_interval_ms` and `max_elapsed_ms` to change these defaults. The optional `max_attempts` cap defaults to the elapsed limit divided by the interval, rounded up (36); it no longer stops after five attempts. The separate supervisor lifetime defaults to 24 hours. Disable with `monitor_recovery(enabled: false)`.
-
-Codex's built-in retries finish first. The default `retry_mode: "transient"` accepts recognized connection, stream and server failures. When the user requests retries for any failed turn, choose `retry_mode: "all_failed"`: unknown, missing, authentication and rate-limit errors also qualify. Both modes require a verified terminal `failed` status. Manual interruption disables recovery. Paused/ended goals, explicit host budget/usage/policy stops, active user work and ambiguous submissions remain protected. Silence alone is not failure. Recovery reconciles completed effects before continuing; it does not automatically replay commands or restart training. See [configuration and timing details](codex-monitor/references/plugin.md#session-recovery).
-
-## Development and validation
-
-Source, tests and build tooling live on the `develop` branch. Run these commands there:
-
-```text
-npm test
-npm run package -- dist/codex-monitor-v0.2.3
+```sh
+node install.mjs
 ```
 
-Deployment packages include compiled JavaScript, production dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, development dependencies, reports, caches and local state are excluded. Deployment pull requests target `main`; development stays on `develop`. The v0.1 tag remains available for the standalone release.
+The wizard asks for the Codex configuration directory, client, compact/verbose
+output, automatic hook reports and background launcher startup. It shows the
+plan before installing. Use `node install.mjs --dry-run` to preview it.
 
-Enable isolated native App Server tests with `CODEX_MONITOR_TEST_NATIVE=1`. They use temporary Codex homes and a local synthetic model endpoint, never user credentials or paid models. Network fixtures inject HTTP failures, broken streams and manual interruption.
+After installation:
 
-Enable read-only NVIDIA hardware tests with `CODEX_MONITOR_TEST_GPU=1` on a host with working `nvidia-smi`. These check GPU selectors and finite quiet monitoring without changing workloads; deterministic tests cover threshold and recovery transitions.
+1. Fully exit and reopen Codex. Check the plugin in `/plugins` and its connection
+   in `/mcp`; ask Codex to call `monitor_display` to verify execution.
+2. If automatic reports were included, review and trust this plugin's Stop and
+   Interrupt hooks in `/hooks`. An upgrade may require reviewing them again.
+3. If the launcher was not started, run the command printed by setup from an
+   external terminal. Start it again after login/reboot; no OS service is installed.
 
-For a real read-only transition probe and repeatable GPU-provider fault tests, see [GPU validation](https://github.com/EthenJ/codex-monitor/blob/develop/docs/gpu-validation.md). Run `bash tools/validate-docker.sh` to build both container fixtures and save their test logs.
+Before upgrading, reconcile active monitors, waits, recovery and unresolved
+events. The installer refuses to replace a busy installation. See the
+[installation guide](codex-monitor/references/installation.md) for upgrades,
+custom directories and noninteractive setup.
 
-```text
-docker build -f tests/container/Dockerfile -t codex-monitor-network-test .
-docker run --rm --network none codex-monitor-network-test
-```
+## Configuration
 
-Image building downloads dependencies; test execution uses only container loopback. Exact coverage is recorded in [Node validation](https://github.com/EthenJ/codex-monitor/blob/develop/docs/node-validation.md). Prior Python platform/GPU results do not establish Node platform coverage.
+Describe the workload and desired action to Codex, for example:
 
-For Ubuntu installation, full container checks and manual workload/goal/GPU cases, follow the [Ubuntu validation guide](https://github.com/EthenJ/codex-monitor/blob/develop/docs/ubuntu-validation.md).
+> Monitor this training process and its metrics file for 24 hours. Alert if
+> progress stops for five minutes and GPU utilization stays below 10% for two
+> minutes. Continue other work; when only training remains, pause the goal and
+> resume it on an event. Do not enable conversation retries.
 
-For native Windows regression commands and the pending platform/GPU checks, use the [Node Windows checklist](https://github.com/EthenJ/codex-monitor/blob/develop/docs/node-windows-validation.md).
+Configuration uses MCP tools with validated types and ranges. The agent supplies
+the exact current `thread_id`; `options.cwd` must be an absolute workload directory.
 
-## Boundaries
+| Setting | Tool / field | Default |
+| --- | --- | --- |
+| Display | `monitor_display`: `mode` | `compact`; use `verbose` for diagnostics |
+| Observer lifetime | `monitor_start`: `options.timeout_ms` | 30 minutes; watchdog maximum 7 days, owned command maximum 30 minutes |
+| File progress | `options.watch_file` or `options.watch_directory`, `options.stalled_for_ms` | Inactivity rule requires an explicit duration |
+| GPU health | `options.gpu_util_below`, `options.gpu_below_for_ms`, `options.gpu_id` | Off until a threshold is set; default dwell 2 minutes, GPU `0` |
+| Retry interval | `monitor_recovery`: `retry_interval_ms` | Fixed 300,000 ms (5 minutes) |
+| Retry incident limit | `monitor_recovery`: `max_elapsed_ms` | 10,800,000 ms (3 hours) |
+| Recovery lifetime | `monitor_recovery`: `lifetime_ms` | 86,400,000 ms (24 hours) |
 
-- Native events remain tool outputs; presentation and scheduling are controlled by Codex. Immediate tool preemption is not promised.
-- Submission, turn completion and acknowledgement are separate states. Queued events cannot be recalled. Uncertain submissions are not blindly retried; exactly-once execution is not guaranteed.
-- Goal waiting/recovery require the same loaded local daemon. There is no atomic compare-and-set/start; concurrent user actions between verification and a write remain a race boundary.
-- Restart marks observations unknown, waits interrupted and recovery disabled. It does not recreate workloads.
-- Windows Job Objects protect owned descendants. POSIX graceful shutdown cleans groups; SIGKILL cannot execute userspace cleanup. Observed PIDs are never owned.
-- GPU rules require local `nvidia-smi`; co-tenants and legitimate training pauses can resemble stalls.
+For training, use `options.watchdog_only: true` to keep healthy progress quiet, with
+`process_exit`, `watchdog_stalled`, `monitor_error` and `monitor_expired` notifications.
+Choose `options.dead_if: "all"` to require both configured file and GPU stall conditions,
+or `"any"` to alert on either. Set a lifetime that covers the expected run.
 
-State lives under `~/.codex/monitor-node` or `CODEX_MONITOR_HOME`, outside watched trees. Stop observations with the MCP tools. `node codex-monitor/runtime/cli.js stop-broker` stops only the launcher.
+Recovery is **off until explicitly authorized**. It waits for Codex's own retries
+to finish, then retries verified failed turns within the configured limits.
+`retry_mode: "transient"` covers recognized connection/server failures;
+`"all_failed"` additionally covers unlisted failures. Manual interruption,
+paused goals and host budget/usage limits prevent recovery. Disable it with
+`monitor_recovery` using `enabled: false`.
 
-## Legacy helpers
+Use `monitor_validate` to preview configuration, `monitor_status` to inspect a
+specific observer, and `monitor_report` when a status summary is wanted. Routine
+end-of-turn summaries come from trusted hooks. State is stored in
+`<CODEX_HOME>/monitor-node` (normally `~/.codex/monitor-node`), or
+`CODEX_MONITOR_HOME` when set. Use consistent directories for Codex and the launcher.
 
-Original Python helpers and regression tests remain on `develop` for compatibility. They are not used or shipped by the Node plugin. See [v0.1 standalone documentation](https://github.com/EthenJ/codex-monitor/blob/v0.1/README.md).
+See the [tool and configuration reference](codex-monitor/references/plugin.md)
+for complete examples, GPU rules, goal waiting and recovery policies.
+
+## License
+
+[MIT](LICENSE).

@@ -22,7 +22,7 @@ All eleven MCP tools return readable plain text, structured data, and an optiona
 
 In compact mode, a callback directs the agent to `monitor_event(event_ids)` for a visible trigger card, complete evidence and registered actions. After handling, `monitor_event(event_ids, resolution)` acknowledges those IDs and includes the final status in the same card. If evidence was already inspected and work completed, only the latter call is necessary. Do not acknowledge uninspected work just to combine calls. This replaces the old status/ack/stop/report sequence with one or two event cards. Naturally stopped observers require no extra stop call. Live observers continue until their deadline or explicit cancellation, and unrelated/newer events are preserved. Expired, superseded, suppressed and already acknowledged events retain their state; unknown IDs reject the whole selection before acknowledgements.
 
-Every operation includes a fresh `report` in structured data, so compact mode can reuse that status before yielding if subsequent work has not made it stale. Verbose shows diagnostic detail and retains explicit status/ack/report calls. The CLI event card identifies the workload, trigger, exit status when available, review/acknowledgement state and running count. The optional HTML panel highlights the same selected events. A native wakeup alone remains a `functionCallOutput`; the event card appears when the awakened agent calls the MCP event tool. No extra model turn is submitted solely for UI rendering.
+Every operation includes a fresh `report` in structured data for monitor operations and diagnostics. Trusted Stop/Interrupt hooks provide routine end-of-turn summaries; neither display mode requires an extra report call or repeated monitor counts in the final answer. Explicit status/report calls remain available on request and for diagnostics. The CLI event card identifies the workload, trigger, exit status when available, review/acknowledgement state and running count. The optional HTML panel highlights the same selected events. A native wakeup alone remains a `functionCallOutput`; the event card appears when the awakened agent calls the MCP event tool. No extra model turn is submitted solely for UI rendering.
 
 Codex CLI 0.166.0 does not render this HTML panel. Its `Called server.tool(arguments)` header and expand/collapse controls belong to Codex; the plugin controls the readable result beneath them. Confirm the user's actual client before troubleshooting graphics. CLI text output is not evidence of a desktop rendering failure. Keep the terminal workflow useful without a browser, model-driven refresh loops or claims of an embedded GUI.
 
@@ -48,7 +48,7 @@ For `plugin contents changed; hook approval required`, finish the update, inspec
 | `monitor_wait` | Record dependency and optionally pause goal with authorization |
 | `monitor_cancel_wait` | Cancel wait and mute its notifications; leave goal unchanged |
 | `monitor_ack` | Record handled or dismissed events and their resolution |
-| `monitor_recovery` | Configure bounded recovery after transient session errors |
+| `monitor_recovery` | Configure bounded recovery after eligible session errors |
 
 Every tool requires the exact caller thread UUID. Per-thread state lives under `~/.codex/monitor-node` or `CODEX_MONITOR_HOME`, outside watched trees. The private local HTTP endpoint uses a random bearer token. Observers survive MCP disconnects. Services exit after one idle minute once observations, delivery, waits and recovery settle.
 
@@ -128,11 +128,11 @@ Command debounce suppresses only consecutive identical matching lines within its
 
 The existing daemon's WebSocket proxy receives `turn/start` with `input: []` and `toolOutput`. Events retain `functionCallOutput` identity rather than becoming user chat messages. Standard MCP notifications alone do not imply a new turn. No undocumented MCP wake feature or chat fallback is used.
 
-The service joins only an already-loaded thread for lifecycle notifications, without replacing it or changing its settings. Short event payloads carry IDs and evidence; full records are available through status. Model instructions and source evidence remain distinct.
+The service joins only an already-loaded thread for lifecycle notifications, without replacing it or changing its settings. Short event payloads carry IDs and trigger summaries; full evidence and registered actions are available through `monitor_event` or `monitor_status`. Model instructions and source evidence remain distinct.
 
 Before sending, duplicates are coalesced, newer matching events supersede pending ones, acknowledged events are skipped, and expired events are discarded. A 250 ms batching window groups at most eight events. Registration/history are bounded. Reusing a name after an old monitor finishes supersedes that monitor's pending events.
 
-Lifecycle: `pending -> sending -> submitted -> acknowledged`; alternatives include `superseded`, `expired`, `suppressed`, `failed`, and `unknown`. Turn completion does not prove every event was handled. Only `monitor_ack` records the agent's resolution. Acknowledgement/expiry cannot recall an already queued result. Uncertain submissions are not automatically retried; exactly-once execution is not guaranteed.
+Lifecycle: `pending -> sending -> submitted -> acknowledged`; alternatives include `superseded`, `expired`, `suppressed`, `failed`, and `unknown`. Turn completion does not prove every event was handled. Explicit acknowledgement through `monitor_event` with a resolution or `monitor_ack` records the agent's resolution. Acknowledgement/expiry cannot recall an already queued result. Uncertain submissions are not automatically retried; exactly-once execution is not guaranteed.
 
 ## Native goal waiting
 
@@ -152,7 +152,7 @@ Default `wake_scope: "thread"` releases on **ANY monitor in the same conversatio
 }
 ```
 
-The tool blocks until the pause RPC, matching native goal notification and unchanged paused-goal read are confirmed. Verify `state: waiting` and `goal_control: paused` before yielding. It records `pause_barrier: draining` while the calling turn is active. Native goal pause does not interrupt that turn or its tools: finish the status report and end the turn promptly. Waiting synchronously inside that turn for its own completion would deadlock.
+The tool blocks until the pause RPC, matching native goal notification and unchanged paused-goal read are confirmed. Verify `state: waiting` and `goal_control: paused` before yielding. It records `pause_barrier: draining` while the calling turn is active. Native goal pause does not interrupt that turn or its tools: end the turn promptly once the pause is confirmed. Waiting synchronously inside that turn for its own completion would deadlock.
 
 Early monitor events remain pending until native lifecycle notifications and a host read establish idle (`pause_barrier: ready`) with the same goal still paused. Only then may the service submit the wake and restore the goal. There is no model polling or recurring dispatch timer during this barrier. A quiet wait does not submit a new turn. Live reports distinguish `goal paused; finishing current turn` from `goal waiting for event`. A plain running count never establishes goal pause.
 
