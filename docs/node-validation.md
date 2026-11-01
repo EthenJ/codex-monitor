@@ -182,3 +182,9 @@ node --test --test-timeout=25000 tests/node/*.test.mjs
 docker build -f tests/container/Dockerfile -t codex-monitor-network-test .
 docker run --rm --init --network none codex-monitor-network-test
 ```
+
+## v0.2.3 guarded waiting and pause barrier
+
+The final Windows review on 2026-11-01 passed **178 tests: 172 passed, six expected platform/hardware skips, zero failures**, with native Codex tests enabled (Node 24.22.0, Codex 0.166.0). New deterministic tests cover all-thread unresolved events, live observer verification, missing error/expiry fallbacks, any-monitor/default-scope wakeups, newly registered sources, readiness races, delayed/missing pause notifications, an early event held through current-turn completion, stale idle reads, cancellation, expiry and unverifiable host state. Real MCP schema tests cover optional IDs, wake scope and structured guard errors.
+
+The isolated native fixture keeps a model turn running, pauses its active goal through Manager, triggers a different monitor, and verifies the event remains pending with the goal paused. Only after the original synthetic response completes and the host reaches idle may the callback start a new turn and restore the unchanged goal. Another native case checks quiet waiting with recovery enabled and no spurious continuation. These fixtures use temporary Codex homes and a local synthetic provider, not user credentials or paid models. The quiet negative observation window is bounded; the public host still has no atomic compare-and-start API.

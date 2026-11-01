@@ -154,6 +154,9 @@ test('real MCP publishes typed schemas, rejects typos, previews without service 
     assert.ok(variants.some(x => x.properties.command)); assert.ok(variants.some(x => x.properties.gpu_util_below?.maximum === 100));
     assert.ok(variants.every(x => x.additionalProperties === false));
     assert.ok(tools.find(x => x.name === 'monitor_validate').outputSchema.properties.errors);
+    const waitSchema = tools.find(x => x.name === 'monitor_wait').inputSchema;
+    assert.ok(!waitSchema.required.includes('monitor_ids'));
+    assert.deepEqual(waitSchema.properties.wake_scope.enum, ['thread', 'selected']);
     const call = (name, args) => client.callTool({ name, arguments: { thread_id: f.thread, ...args } });
     const valid = await call('monitor_validate', { request: { operation: 'start', config: f.config }, check_host: false });
     assert.equal(valid.structuredContent.valid, true); assert.equal(existsSync(f.directory), false);
@@ -167,6 +170,10 @@ test('real MCP publishes typed schemas, rejects typos, previews without service 
     assert.equal(bad.isError, true); assert.equal(bad.structuredContent.validation.valid, false);
     const started = await call('monitor_start', { ...f.config, notify_on: ['monitor_expired'] });
     assert.equal(started.structuredContent.state, 'armed'); assert.equal(started.structuredContent.kind, 'watchdog');
+    const unguarded = await call('monitor_wait', { resume_instructions: 'Inspect the result', goal_authorization: 'Pause while waiting and resume on any monitor' });
+    assert.equal(unguarded.isError, true); assert.equal(unguarded.structuredContent.state, 'guard_required');
+    assert.equal(unguarded.structuredContent.error.code, 'MONITOR_GUARD_REQUIRED');
+    assert.match(unguarded.content[0].text, /monitor_error and monitor_expired/);
     const stopped = await call('monitor_stop', { monitor_id: started.structuredContent.id }); assert.equal(stopped.structuredContent.state, 'stopped');
     const status = await call('monitor_status'); assert.equal(status.structuredContent.events.length, 0);
   } finally {

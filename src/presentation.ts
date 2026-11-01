@@ -84,7 +84,7 @@ export function renderSummary(tool: string, data: Json, isError = false, mode: D
     return `Monitor · ${count} ${count === 1 ? 'event' : 'events'} acknowledged${view ? '\n'+compactReport(view) : ''}`;
   }
   if (tool === 'monitor_cancel_wait') return 'Monitor · wait cancelled · goal unchanged';
-  if (tool === 'monitor_wait') return `Monitor · wait ${state(data.state)}${data.goal_control ? ` · goal ${label(data.goal_control)}` : ''}${data.goal_control === 'unchanged' ? ' (active goals may continue)' : ''}${data.reason || data.error ? ` · ${label(data.reason || data.error)}` : ''}`;
+  if (tool === 'monitor_wait') return `Monitor · wait ${state(data.state)}${data.goal_control ? ` · goal ${label(data.goal_control)}` : ''}${data.goal_control === 'unchanged' ? ' (active goals may continue)' : ''}${data.pause_barrier === 'draining' ? ' · finish this turn; wake held until idle' : ''}${data.reason || data.error ? ` · ${label(data.reason || data.error)}` : ''}`;
   const lines = [`Monitor · ${label(data.name || data.id || tool)} · ${state(data.state)}`];
   if (mode === 'verbose' && tool === 'monitor_start' && data.deadline != null) lines.push(`  Until ${at(data.deadline)}`);
   return lines.join('\n');

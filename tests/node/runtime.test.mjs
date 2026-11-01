@@ -96,12 +96,198 @@ test('native goal wait preserves budget, resumes after submission', async t => {
   assert.deepEqual(host.changes.map(x => Object.keys(x).sort()), [['origin', 'status', 'threadId'], ['origin', 'status', 'threadId']]);
 });
 
+test('an unhandled event anywhere in the thread blocks a new goal pause',async t=>{
+  const {manager,host,start,work}=await fixture(t),m=await start();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Independent'});
+  manager.event(other.id,{event_type:'file_change',path:'other'});
+  const event=Object.values(manager.events)[0];
+  const result=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'});
+  assert.equal(result.state,'ready');assert.deepEqual(result.event_ids,[event.id]);
+  assert.equal(manager.wait,null);assert.equal(host.changes.length,0);assert.equal(host.goal.status,'active');
+});
+
+test('submitted and uncertain events must be reconciled before pausing again',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();
+  manager.event(m.id,{event_type:'file_change',path:'result'});await manager.flush();
+  const event=Object.values(manager.events)[0];assert.equal(event.state,'submitted');
+  for(const state of ['submitted','unknown','failed']){
+    event.state=state;
+    assert.equal((await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'})).state,'ready');
+  }
+  assert.equal(host.changes.length,0);
+  await manager.acknowledge({event_ids:[event.id],resolution:'Inspected result'});
+  assert.equal((await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'})).goal_control,'paused');
+});
+
+test('no live source or a saved armed record cannot pause a goal',async t=>{
+  const {manager,host,start}=await fixture(t);
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'};
+  assert.equal((await manager.beginWait(params)).state,'ready');
+  const m=await start(),job=manager.jobs.get(m.id);manager.jobs.delete(m.id);
+  assert.equal((await manager.beginWait(params)).state,'ready');
+  manager.jobs.set(m.id,job);assert.equal(host.changes.length,0);assert.equal(manager.wait,null);
+});
+
+test('wait sources require both expiry and sensor-error fallback delivery',async t=>{
+  const {manager,host,work}=await fixture(t);
+  const m=await manager.start({name:'unguarded',options:{cwd:work,watch_file:'result',timeout_ms:10000},notify_on:['file_change'],instructions:'Inspect'});
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'};
+  const result=await manager.beginWait(params);
+  assert.equal(result.state,'guard_required');assert.equal(result.error.code,'MONITOR_GUARD_REQUIRED');assert.deepEqual(result.monitor_ids,[m.id]);
+  manager.records[m.id].notify_on.push('monitor_expired');
+  assert.equal((await manager.beginWait(params)).state,'guard_required');
+  assert.equal(manager.wait,null);assert.equal(host.changes.length,0);
+});
+
+test('default thread wait includes other live monitors and wakes on any one',async t=>{
+  const {manager,host,start,work}=await fixture(t),m=await start();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Inspect other result'});
+  const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'});
+  assert.equal(wait.wake_scope,'thread');assert.deepEqual(wait.monitor_ids,[m.id,other.id].sort());assert.deepEqual(wait.guard_ids,wait.monitor_ids);
+  manager.event(other.id,{event_type:'file_change',path:'other'});await manager.flush();
+  assert.equal(host.submissions.length,1);assert.equal(manager.wait.state,'delivered');assert.equal(host.goal.status,'active');
+});
+
+test('a monitor registered during a thread wait can release it',async t=>{
+  const {manager,host,start,work}=await fixture(t);await start();
+  await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'});
+  const other=await manager.start({name:'later',options:{cwd:work,watch_file:'later',timeout_ms:10000},instructions:'Inspect later result'});
+  assert.ok(manager.wait.monitor_ids.includes(other.id));assert.ok(manager.wait.guard_ids.includes(other.id));
+  manager.event(other.id,{event_type:'file_change',path:'later'});await manager.flush();
+  assert.equal(host.submissions.length,1);assert.equal(manager.wait.state,'delivered');assert.equal(host.goal.status,'active');
+});
+
+test('an event arriving during the last native goal read prevents pause mutation',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start(),rpc=host.rpc.bind(host);let emitted=false;
+  host.rpc=async(method,params)=>{
+    const result=await rpc(method,params);
+    if(method==='thread/goal/get'&&!emitted){emitted=true;manager.event(m.id,{event_type:'process_exit',returncode:0});}
+    return result;
+  };
+  const result=await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'});
+  assert.equal(result.state,'ready');assert.equal(host.goal.status,'active');assert.equal(host.changes.length,0);
+});
+
+test('notification-only wait also rechecks events after its asynchronous goal read',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start(),rpc=host.rpc.bind(host);host.goal=null;
+  host.rpc=async(method,params)=>{const result=await rpc(method,params);if(method==='thread/goal/get')manager.event(m.id,{event_type:'process_exit'});return result;};
+  const result=await manager.beginWait({resume_instructions:'Inspect'});
+  assert.equal(result.state,'ready');assert.equal(manager.wait,null);assert.equal(host.changes.length,0);
+});
+
+test('goal wait holds an early event until the pausing turn has completed', async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();
+  host.status='active';host.turn.status='inProgress';
+  const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'});
+  assert.equal(wait.pause_barrier,'draining');assert.equal(host.goal.status,'paused');
+  manager.event(m.id,{event_type:'process_exit',returncode:0});await manager.flush();
+  assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+  assert.equal(Object.values(manager.events)[0].state,'pending');
+  host.status='idle';host.turn.status='completed';
+  host.emit('notification','turn/completed',{threadId:host.thread,turn:structuredClone(host.turn)});
+  await eventually(()=>manager.wait.state==='delivered');
+  assert.equal(host.submissions.length,1);assert.equal(host.goal.status,'active');
+});
+
+test('an idle notification completes a quiet pause barrier without waking the model',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();host.status='active';host.turn.status='inProgress';
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'});
+  assert.equal(manager.wait.pause_barrier,'draining');
+  host.status='idle';host.turn.status='completed';
+  host.emit('notification','thread/status/changed',{threadId:host.thread,status:{type:'idle'}});
+  await eventually(()=>manager.wait.pause_barrier==='ready');
+  assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+});
+
+test('cancelling while an early event waits at the pause barrier never resumes the goal',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();host.status='active';host.turn.status='inProgress';
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'});
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();await manager.cancelWait();
+  host.status='idle';host.turn.status='completed';
+  host.emit('notification','turn/completed',{threadId:host.thread,turn:structuredClone(host.turn)});
+  await manager.flush();assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+});
+
+test('an event expiring at the pause barrier cannot resume after the turn ends',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();host.status='active';
+  await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'});
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  const event=Object.values(manager.events)[0];event.expires_at=0;manager.expire();
+  host.status='idle';host.emit('notification','turn/completed',{threadId:host.thread,turn:{id:'original',status:'completed'}});
+  await manager.flush();assert.equal(event.state,'expired');assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+  assert.equal(manager.wait.state,'interrupted');
+});
+
+test('wait call does not return success before a delayed native pause notification',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start(),reached=gate(),release=gate();
+  const rpc=host.rpc.bind(host);host.rpc=async(method,params)=>{
+    if(method!=='thread/goal/set')return rpc(method,params);
+    host.goal.status=params.status;host.goal.updatedAt++;const goal=structuredClone(host.goal);
+    reached.release();void release.promise.then(()=>host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal}));
+    return {goal};
+  };
+  let returned=false;
+  const waiting=manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'}).then(result=>{returned=true;return result;});
+  await reached.promise;await Promise.resolve();
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(returned,false);assert.equal(manager.wait.state,'preparing');assert.equal(host.submissions.length,0);
+  release.release();assert.equal((await waiting).goal_control,'paused');
+});
+
+test('missing native pause acknowledgement times out with no successful wait or wake',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start(),reached=gate();
+  const rpc=host.rpc.bind(host);host.rpc=async(method,params)=>{
+    if(method!=='thread/goal/set')return rpc(method,params);
+    host.goal.status=params.status;host.goal.updatedAt++;reached.release();return {goal:structuredClone(host.goal)};
+  };
+  t.mock.timers.enable({apis:['setTimeout']});
+  const failure=assert.rejects(manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'}),/notification not confirmed/);
+  await reached.promise;t.mock.timers.tick(10001);await failure;
+  assert.equal(manager.wait.state,'failed');assert.equal(manager.wait.goal_control,'unverified');
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();assert.equal(host.submissions.length,0);
+});
+
+test('pause barrier cannot be bypassed by an idle read overtaken by native active status',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start(),rpc=host.rpc.bind(host);let raced=false;
+  host.rpc=async(method,params)=>{
+    const result=await rpc(method,params);
+    if(method==='thread/read'&&!raced){raced=true;host.status='active';host.emit('notification','thread/status/changed',{threadId:host.thread,status:{type:'active'}});}
+    return result;
+  };
+  const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'});
+  assert.equal(wait.pause_barrier,'draining');
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();assert.equal(host.submissions.length,0);
+});
+
+test('unverifiable idle state fails the pause handoff without restoring the goal',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();host.status='systemError';
+  await assert.rejects(manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause while waiting and resume on completion'}),/barrier could not be verified/);
+  assert.equal(manager.wait.state,'failed');assert.equal(host.goal.status,'paused');assert.equal(manager.records[m.id].muted,true);
+});
+
 test('equivalent wait registration reuses the wait without another pause', async t => {
   const {manager,host,start}=await fixture(t), m=await start();
   const params={monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'};
   const first=await manager.beginWait(params), second=await manager.beginWait(params);
   assert.equal(second.id,first.id);assert.equal(second.goal_control,'paused');assert.equal(host.changes.length,1);
   await assert.rejects(manager.beginWait({...params,resume_instructions:'Different action'}),/already active/);
+});
+
+test('reusing a wait rechecks unresolved events instead of declaring a clean handoff',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();host.status='active';
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'};
+  const wait=await manager.beginWait(params);manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  const result=await manager.beginWait(params);
+  assert.equal(result.state,'ready');assert.equal(result.wait_id,wait.id);assert.equal(result.event_ids.length,1);
+  assert.equal(host.changes.length,1);assert.equal(host.submissions.length,0);assert.equal(manager.wait.state,'waiting');
+});
+
+test('an unverifiable reused pause cannot retain a successful waiting status',async t=>{
+  const {manager,host,start}=await fixture(t);await start();
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'};
+  await manager.beginWait(params);host.status='systemError';
+  await assert.rejects(manager.beginWait(params),/barrier could not be verified/);
+  assert.equal(manager.wait.state,'failed');assert.equal(manager.wait.goal_control,'unverified');assert.equal(host.goal.status,'paused');
 });
 
 test('active goal never silently becomes a notification-only wait when authorization is omitted', async t => {
@@ -140,7 +326,7 @@ test('expired historical events do not prevent a new wait on a live monitor', as
 test('goal edit mutes subsequent selected events but preserves unrelated callbacks', async t => {
   const {manager,host,start,work}=await fixture(t), m=await start();
   const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Independent'});
-  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  await manager.beginWait({wake_scope:'selected',monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
   host.goal.objective='New user goal';host.goal.status='active';
   manager.event(m.id,{event_type:'file_change',path:'first'});
   manager.event(other.id,{event_type:'file_change',path:'independent'});await manager.flush();
@@ -182,7 +368,7 @@ test('a notification-only wait cannot bypass a manual goal pause', async t => {
 test('an unrelated event cannot wake an authorized paused goal wait', async t => {
   const {manager,host,start,work}=await fixture(t), m=await start();
   const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Independent'});
-  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  await manager.beginWait({wake_scope:'selected',monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
   manager.event(other.id,{event_type:'file_change',path:'other'});await manager.flush();
   assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
   manager.event(m.id,{event_type:'process_exit'});await manager.flush();

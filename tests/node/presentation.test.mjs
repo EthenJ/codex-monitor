@@ -90,6 +90,8 @@ test('wait cards distinguish confirmed goal control from notification-only waiti
   const paused=toolResult('monitor_wait',{state:'waiting',goal_control:'paused'}).content[0].text;
   const unchanged=toolResult('monitor_wait',{state:'waiting',goal_control:'unchanged'}).content[0].text;
   assert.match(paused,/goal paused/);assert.match(unchanged,/goal unchanged.*active goals may continue/);
+  const draining=toolResult('monitor_wait',{state:'waiting',goal_control:'paused',pause_barrier:'draining'}).content[0].text;
+  assert.match(draining,/finish this turn; wake held until idle/);
   const report=summarize({wait:{state:'interrupted',goal_control:'unverified',error:'Connection lost'}},'live');
   assert.equal(report.wait.goal_control,'unverified');assert.equal(report.wait.error,'Connection lost');
   const refusal=toolResult('monitor_wait',{state:'goal_pause_required',goal_control:'unchanged',error:{message:'Goal is still active; reuse existing authorization'}},true);

@@ -8,6 +8,14 @@ import { Bridge, getGoal, latestTurn } from '../../codex-monitor/runtime/bridge.
 import { Manager } from '../../codex-monitor/runtime/manager.js';
 
 const native = { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 25000 };
+async function changed(manager, predicate, timeout = 8000) {
+  const deadline = Date.now() + timeout;
+  while (!predicate()) {
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > 0, JSON.stringify({wait:manager.wait,events:manager.snapshot().events}));
+    await manager.changes.wait(manager.changes.revision, remaining);
+  }
+}
 function notice(bridge, method, predicate = () => true, label = '') {
   return new Promise((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); bridge.off('notification', listener); };
@@ -93,6 +101,7 @@ test('native Manager pauses continuation, leaves current turn running, and resum
   await original.finish();
   assert.equal((await getGoal(f.bridge, f.thread)).status, 'paused'); assert.equal(f.requests.length, 1);
   f.manager.event(f.monitor.id, { event_type: 'process_exit', returncode: 0 }); await f.manager.flush();
+  await changed(f.manager,()=>f.manager.wait.state==='delivered');
   const goal = await getGoal(f.bridge, f.thread);
   assert.equal(goal.status, 'active'); assert.equal(goal.objective, 'Isolated goal lifecycle fixture'); assert.equal(goal.tokenBudget, 10000);
   assert.equal(f.manager.wait.state, 'delivered'); assert.equal(f.manager.wait.goal_control, 'resumed');
@@ -178,6 +187,24 @@ test('native active goal refuses false waiting and can reuse existing conditiona
   await new Promise(resolve=>setTimeout(resolve,1500));
   assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');assert.equal(f.requests.length,1);
   f.manager.event(f.monitor.id,{event_type:'process_exit',returncode:0});await f.manager.flush();
+  await changed(f.manager,()=>f.manager.wait.state==='delivered');
   assert.equal((await getGoal(f.bridge,f.thread)).status,'active');assert.equal(f.manager.wait.goal_control,'resumed');
   await f.interrupt({id:Object.values(f.manager.events)[0].submitted_turn});
+});
+
+test('native thread wait holds another monitor event until the calling turn actually ends',native,async t=>{
+  const f=await fixture(t),original=await f.startTurn();
+  const other=await f.manager.start({name:'other',options:{cwd:path.dirname(f.manager.directory),watch_file:'other',timeout_ms:20000},instructions:'Inspect the other result'});
+  const waiting=await f.wait();assert.equal(waiting.pause_barrier,'draining');
+  assert.equal(waiting.wake_scope,'thread');assert.ok(waiting.monitor_ids.includes(other.id));
+  f.manager.event(other.id,{event_type:'process_exit',returncode:0});await f.manager.flush();
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');
+  assert.equal(Object.values(f.manager.events)[0].state,'pending');
+  assert.equal(f.requests.length,1);assert.equal((await latestTurn(f.bridge,f.thread)).id,original.turn.id);
+  await original.finish();
+  await changed(f.manager,()=>f.manager.wait.state==='delivered');
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'active');
+  const event=Object.values(f.manager.events)[0];assert.equal(event.state,'submitted');
+  assert.notEqual(event.submitted_turn,original.turn.id);
+  await f.interrupt({id:event.submitted_turn});
 });

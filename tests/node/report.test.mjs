@@ -13,7 +13,9 @@ import { ensureBroker, ensureService, rpc } from '../../codex-monitor/runtime/se
 test('running counts are distinct from a confirmed conditional goal wait',()=>{
   const snapshot={monitors:[{id:'m',state:'armed'}]};
   assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running');
-  snapshot.wait={state:'waiting',goal_control:'paused'};
+  snapshot.wait={state:'waiting',goal_control:'paused',pause_barrier:'draining'};
+  assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running · goal paused; finishing current turn');
+  snapshot.wait.pause_barrier='ready';
   assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running · goal waiting for event');
   snapshot.wait.goal_control='unchanged';
   assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running');

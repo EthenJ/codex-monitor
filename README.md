@@ -4,7 +4,7 @@ A Node.js Codex plugin for workload events, native goal waiting and bounded sess
 
 Version **0.2.3** fixes callbacks that could bypass a manually paused goal, makes conditional pause/resume respect later user actions, and distinguishes a confirmed goal pause from notification-only waiting. Interactive installation, compact reports and configurable session recovery remain available.
 
-The refreshed v0.2.3 also refuses a false waiting handoff while a goal is still active: `monitor_wait` requires the applicable pause/resume authorization and confirms the native pause before the agent yields. A running-monitor count alone never means the goal is paused. Reinstall if you installed the earlier v0.2.3 package.
+The refreshed v0.2.3 also refuses a false waiting handoff while a goal is still active: `monitor_wait` requires the applicable pause/resume authorization and confirms the native pause before the agent yields. It checks all unhandled events and live fallback guards before pausing. Early events remain queued until the current turn ends and the host is verified idle; any monitor in the same conversation can then resume the goal. A running-monitor count alone never means the goal is paused. Reinstall if you installed the earlier v0.2.3 package.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
@@ -36,9 +36,9 @@ For manual installation of a deployment package, run `npm ci --omit=dev`, `npm r
 2. A separate per-thread Node service watches the workload without calling the model for healthy progress.
 3. Events are saved, filtered for duplicates/expiry and submitted through `turn/start.toolOutput` to the existing daemon.
 4. Codex uses `monitor_event` to inspect the trigger and evidence, then supplies a resolution after handling. The same card acknowledges the events and reports current status. Pending results already handled independently are suppressed.
-5. With authorization, the native goal pauses while waiting and resumes after event submission and state verification.
+5. Before waiting, `monitor_wait` checks all unresolved thread events and live observers with finite error/expiry fallbacks. With authorization it confirms native goal pause, holds early events until the calling turn ends and the host is idle, then resumes on any monitor event in the same conversation.
 
-Manual goal pause holds ordinary callbacks locally until resume; event expiry still applies. Only selected events from an explicitly authorized goal wait may wake its paused goal. Pause does not interrupt an already-running turn or tool: the agent must finish its status report and yield. Later user edits and disconnects cancel conditional restoration and require reconciliation. See [goal waiting details](codex-monitor/references/plugin.md#native-goal-waiting).
+Manual goal pause holds ordinary callbacks locally until resume; event expiry still applies. An explicitly authorized wait defaults to all monitors in the same conversation, including new sources; `wake_scope: "selected"` explicitly narrows it. Pause does not interrupt an already-running turn or tool: the agent must finish its status report and yield. Later user edits and disconnects cancel conditional restoration and require reconciliation. See [goal waiting details](codex-monitor/references/plugin.md#native-goal-waiting).
 
 Tools: `monitor_start`, `monitor_event`, `monitor_display`, `monitor_validate`, `monitor_report`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
 

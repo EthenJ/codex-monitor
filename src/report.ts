@@ -42,7 +42,9 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
       ...(active.has(x.state) ? { stop: { tool: 'monitor_stop', monitor_id: x.id } } : {}) })),
     events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, deferred_reason: x.deferred_reason })),
     omitted: { monitors: records.length - selected.length, events: Math.max(0, pending.length - 8) },
-    wait: snapshot.wait ? { state: snapshot.wait.state, monitor_ids: snapshot.wait.monitor_ids, goal_control: snapshot.wait.goal_control, error: snapshot.wait.error } : null,
+    wait: snapshot.wait ? { state: snapshot.wait.state, monitor_ids: snapshot.wait.monitor_ids, goal_control: snapshot.wait.goal_control,
+      wake_scope: snapshot.wait.wake_scope, guard_ids: snapshot.wait.guard_ids,
+      pause_barrier: snapshot.wait.pause_barrier, pause_checked_at: snapshot.wait.pause_checked_at, error: snapshot.wait.error } : null,
     recovery: { enabled: r.enabled, state: r.state, attempts: r.attempts ?? 0, policy: r.policy,
       next_retry_at: r.next_retry_at ?? null, deadline: r.deadline,
       ...(r.enabled ? { stop: { tool: 'monitor_recovery', enabled: false } } : {}) },
@@ -56,7 +58,7 @@ export function compactReport(report: Json): string {
   if (starting) parts.push(`${starting} starting`);
   if (stopping) parts.push(`${stopping} stopping`);
   if (report.recovery?.enabled) parts.push('auto-retry on');
-  if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused') parts.push('goal waiting for event');
+  if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused') parts.push(report.wait.pause_barrier === 'ready' ? 'goal waiting for event' : 'goal paused; finishing current turn');
   return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId: string, after: number, waitMs: number, signal?: AbortSignal, root = stateRoot()) {
