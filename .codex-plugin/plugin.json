@@ -1,6 +1,6 @@
 {
   "name": "codex-monitor",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Workload events and training watchdogs that wake the same Codex thread.",
   "author": {
     "name": "EthenJ"

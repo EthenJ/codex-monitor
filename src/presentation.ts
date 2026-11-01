@@ -2,6 +2,7 @@ import { Json } from './common.js';
 import { compactReport, summarize } from './report.js';
 import { DisplayMode } from './display.js';
 import { eventNames } from './event-text.js';
+import { capacityWarning } from './capacity.js';
 
 export const toolTitles: Record<string, string> = {
   monitor_start: 'Start workload monitor', monitor_stop: 'Stop workload monitor',
@@ -56,7 +57,15 @@ export function renderSummary(tool: string, data: Json, isError = false, mode: D
     if (report) lines.push(compactReport(report));
     return lines.join('\n') || 'Monitor · no selected events';
   }
-  if (tool === 'monitor_report') return compactReport(data);
+  if (tool === 'monitor_report') {
+    const lines = [compactReport(data)];
+    if (!data.verified || (data.details ?? (mode === 'verbose' ? 'active' : 'summary')) !== 'active') return lines[0];
+    const active: Json[] = (data.monitors || []).filter((m: Json) => liveStates.has(m.state));
+    for (const m of active.slice(0, 32)) lines.push(`  ${label(m.name)} · ${state(m.state)} · ${label(m.kind)}${m.muted ? ' · notifications muted' : ''} · ${label(m.id, 36)}`);
+    const omitted = Math.max(0, data.summary.active - Math.min(32, active.length));
+    if (omitted) lines.push(`  +${omitted} more active monitors`);
+    return lines.join('\n');
+  }
   if (tool === 'monitor_status') {
     const r = summarize(data, 'live');
     const lines = [compactReport(r)];
@@ -91,10 +100,13 @@ export function renderSummary(tool: string, data: Json, isError = false, mode: D
   return lines.join('\n');
 }
 export function toolResult(tool: string, data: Json, isError = false, view?: Json, mode: DisplayMode = 'compact') {
+  let text = renderSummary(tool, data, isError, mode, view);
+  const warning = capacityWarning(data.capacity ?? (view?.verified ? view.capacity : null));
+  if (warning && data.error?.code !== 'MONITOR_CAPACITY_EXCEEDED' && !text.includes(warning)) text += `\n  ${warning}`;
   return {
     // CLI renders content literally, including blocks marked assistant-only.
     // Keep one readable block for every tool and retain machine data separately.
-    content: [{ type: 'text' as const, text: renderSummary(tool, data, isError, mode, view) }],
+    content: [{ type: 'text' as const, text }],
     structuredContent: data, ...(isError ? { isError: true } : {}),
     _meta: { monitorView: { tool, title: toolTitles[tool] || tool, result: data, report: view, isError, display_mode: mode } },
   };

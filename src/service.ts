@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { atomicJson, bounded, delay, integer, Json, now, readJson, stateRoot, threadKey, VERSION } from './common.js';
 import { launchWindowsDetached } from './windows.js';
 import { Manager } from './manager.js';
+import { CAPACITY_ERROR, MonitorCapacityError } from './capacity.js';
 
 export async function rpc(directory: string, method: string, params: Json = {}, timeout = 20000, signal?: AbortSignal): Promise<any> {
   const endpoint = readJson(path.join(directory, 'endpoint.json'));
@@ -15,7 +16,9 @@ export async function rpc(directory: string, method: string, params: Json = {}, 
     headers: { Authorization: `Bearer ${endpoint.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ method, params }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
   const result = await response.json() as Json;
-  if (!response.ok || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {});
+  if (!response.ok || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'),
+    result.validation ? { report: result.validation } : {},
+    result.code === CAPACITY_ERROR ? { code: result.code, capacity: result.capacity, guidance: result.guidance } : {});
   return result.result;
 }
 export async function withStartupLock(directory: string, operation: () => Promise<void>) {
@@ -146,7 +149,9 @@ export async function serve(directory: string, threadId?: string) {
         }
       }
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ result }));
-    } catch (e) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ error: bounded(e), ...((e as any).report ? { validation: (e as any).report } : {}) })); }
+    } catch (e) { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ error: bounded(e),
+      ...(e instanceof MonitorCapacityError ? { code: e.code, capacity: e.capacity, guidance: e.guidance } : {}),
+      ...((e as any).report ? { validation: (e as any).report } : {}) })); }
     finally { requests--; }
   });
   server.requestTimeout = 60000; server.headersTimeout = 5000;

@@ -85,7 +85,7 @@ async function fixture(t) {
         try { await done; } catch (e) { throw Error(`${e.message}: ${JSON.stringify({ requestTurns: requests.map(r => r.turnId), latest: await latestTurn(bridge, thread), notices })}`); }
       } };
     },
-    wait: () => manager.beginWait({ monitor_ids: [monitor.id], resume_instructions: 'Inspect fixture result', goal_authorization: 'Pause the fixture goal while waiting and resume on its event' }),
+    wait: () => manager.beginWait({ monitor_ids: [monitor.id], goal_authorization: 'Pause the fixture goal while waiting and resume on its event' }),
     async interrupt(turn) {
       const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id, `after interrupt of ${turn.id}`);
       await bridge.rpc('turn/interrupt', { threadId: thread, turnId: turn.id }); await done;

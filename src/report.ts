@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { Json, now, stateRoot, threadKey, VERSION } from './common.js';
 import { rpc } from './service.js';
+import { capacitySchema, monitorCapacity, capacityWarning } from './capacity.js';
 
 export const reportSchema = z.object({
   type: z.literal('monitor_report'), version: z.string(), thread_id: z.string(), checked_at: z.number(),
@@ -11,6 +12,8 @@ export const reportSchema = z.object({
   source: z.enum(['live', 'saved', 'empty', 'unavailable']), verified: z.boolean(),
   revision: z.number(), changes: z.array(z.record(z.string(), z.unknown())), changes_omitted: z.number(),
   live_updates: z.boolean(),
+  capacity: capacitySchema.nullable(),
+  details: z.enum(['summary', 'active']).optional(),
   summary: z.object({ active: z.number(), running: z.number(), starting: z.number(), stopping: z.number(),
     stopped: z.number(), failed_or_unknown: z.number(), unhandled_events: z.number() }),
   monitors: z.array(z.record(z.string(), z.unknown())), events: z.array(z.record(z.string(), z.unknown())),
@@ -31,6 +34,9 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
   return { type: 'monitor_report', version: snapshot.version || VERSION, thread_id: snapshot.thread_id,
     checked_at: now(), source, verified, revision: snapshot.revision || 0, changes: (snapshot.changes || []).slice(-128),
     live_updates: source === 'live' && Number.isSafeInteger(snapshot.revision),
+    // A filtered snapshot still contains the manager's thread-wide slot count.
+    // Legacy services have no verified reservation count; never infer it from history.
+    capacity: source === 'empty' ? monitorCapacity(0) : source === 'live' && capacitySchema.safeParse(snapshot.capacity).success ? snapshot.capacity : null,
     changes_omitted: Math.max(0, (snapshot.revision || 0) - (snapshot.changes || []).length),
     summary: { active: records.filter(x => active.has(x.state)).length,
       running: records.filter(x => x.state === 'armed').length,
@@ -38,7 +44,8 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
       stopping: records.filter(x => x.state === 'stopping').length,
       stopped: records.filter(x => x.state === 'stopped').length,
       failed_or_unknown: records.filter(x => ['failed', 'unknown'].includes(x.state)).length, unhandled_events: pending.length },
-    monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), state: x.state, deadline: x.deadline,
+    monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), kind: x.kind, state: x.state, deadline: x.deadline,
+      muted: Boolean(x.muted),
       latest_event: x.latest_event, outcome: x.outcome?.reason,
       ...(active.has(x.state) ? { stop: { tool: 'monitor_stop', monitor_id: x.id } } : {}) })),
     events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, deferred_reason: x.deferred_reason })),
@@ -62,6 +69,8 @@ export function compactReport(report: Json): string {
   if (stopping) parts.push(`${stopping} stopping`);
   if (report.recovery?.enabled) parts.push('auto-retry on');
   if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused') parts.push(report.wait.pause_barrier === 'ready' ? 'goal waiting for event' : 'goal paused; finishing current turn');
+  const pressure = capacityWarning(report.capacity);
+  if (pressure) parts.push(pressure);
   return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId: string, after: number, waitMs: number, signal?: AbortSignal, root = stateRoot()) {

@@ -12,6 +12,7 @@ import { owned, capture } from '../../codex-monitor/runtime/processes.js';
 import { sameGoal, RpcError } from '../../codex-monitor/runtime/bridge.js';
 import { startSensor, validateOptions } from '../../codex-monitor/runtime/sensors.js';
 import { displaySettings } from '../../codex-monitor/runtime/display.js';
+import { DEFAULT_RESUME_INSTRUCTIONS } from '../../codex-monitor/runtime/contracts.js';
 
 class Host extends EventEmitter {
   goal = { threadId: 't', createdAt: 1, updatedAt: 1, objective: 'Train', status: 'active', tokenBudget: 10000, tokensUsed: 1, timeUsedSeconds: 1 };
@@ -51,6 +52,33 @@ async function eventually(predicate, timeout = 4000) {
   const deadline = Date.now() + timeout;
   while (!predicate()) { if (Date.now() > deadline) assert.fail('condition timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
+
+test('omitted resume instructions use a safe default, refresh live context and discard ended context', async t => {
+  const { manager, host, start } = await fixture(t);
+  const monitor = await start();
+  const required = await manager.beginWait({});
+  assert.equal(required.state, 'goal_pause_required'); assert.equal(manager.wait, null);
+  const first = await manager.beginWait({ goal_authorization: 'Pause while waiting and resume on an event' });
+  assert.equal(first.goal_control, 'paused'); assert.equal(first.instructions, DEFAULT_RESUME_INSTRUCTIONS);
+  const changed = await manager.beginWait({ resume_instructions: 'Inspect the new evaluation result' });
+  assert.equal(changed.id, first.id);
+  const reused = await manager.beginWait({});
+  assert.equal(reused.id, first.id); assert.equal(reused.instructions, changed.instructions);
+  assert.equal(host.changes.length, 1, 'Refreshing omitted instructions must not pause twice');
+  await assert.rejects(manager.beginWait({ resume_instructions: ' ' }));
+  assert.equal(manager.wait.instructions, changed.instructions);
+  await manager.cancelWait();
+  // Explicitly rearm the observer; cancellation mutes its original notifications.
+  manager.records[monitor.id].muted = false;
+  const renewed = await manager.beginWait({});
+  assert.notEqual(renewed.id, first.id); assert.equal(renewed.instructions, DEFAULT_RESUME_INSTRUCTIONS);
+  host.goal.status = 'paused'; host.goal.updatedAt++;
+  host.emit('notification', 'thread/goal/updated', { threadId: host.thread, goal: structuredClone(host.goal) });
+  assert.equal((await manager.beginWait({})).state, 'ready', 'The revoked wait leaves its observers muted');
+  manager.records[monitor.id].muted = false;
+  const external = await manager.beginWait({ goal_authorization: 'Earlier conditional permission is not manual resume permission' });
+  assert.equal(external.state, 'goal_paused'); assert.equal(host.changes.length, 1);
+});
 test('registration reuse, native file result, structured native delivery and acknowledgement', async t => {
   const f = await fixture(t), first = await f.start({ max_events: 1 });
   assert.equal(first.state, 'armed'); assert.equal((await f.start({ max_events: 1 })).id, first.id);

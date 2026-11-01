@@ -100,7 +100,12 @@ paused goals and host budget/usage limits prevent recovery. Disable it with
 
 Use `monitor_validate` to preview configuration, `monitor_status` to inspect a
 specific observer, and `monitor_report` when a status summary is wanted. Routine
-end-of-turn summaries come from trusted hooks. State is stored in
+end-of-turn summaries come from trusted hooks. Request `details: "active"` for
+the active monitor list. Capacity warns at 24 occupied slots, with a hard limit
+of 32; reconcile obsolete or compatible overlapping observers before adding more.
+For concise waits, omit `resume_instructions` unless changing the next action.
+The CLI controls argument display and hook rendering; hooks have no independent
+click-to-expand list in the inspected version. State is stored in
 `<CODEX_HOME>/monitor-node` (normally `~/.codex/monitor-node`), or
 `CODEX_MONITOR_HOME` when set. Use consistent directories for Codex and the launcher.
 
