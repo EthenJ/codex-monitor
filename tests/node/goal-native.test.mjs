@@ -19,14 +19,28 @@ function notice(bridge, method, predicate = () => true, label = '') {
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'monitor-goal-'));
   let bridge, manager, nextRequest;
+  const notices = [];
   const requests = [];
   const server = createServer(async (req, res) => {
-    for await (const chunk of req) { /* Consume the fixture request. */ }
+    let body = ''; for await (const chunk of req) body += chunk;
     const id = `fixture_${requests.length + 1}`;
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     res.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id, object: 'response', status: 'in_progress', output: [] } })}\n\n`);
-    const request = { finish() {
-      res.end(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id, object: 'response', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}\n\n`);
+    const metadata = JSON.parse(body).client_metadata || {};
+    const request = { turnId: metadata.turn_id, finish() {
+      // Return a complete synthetic assistant response, including streamed output.
+      const text = 'Fixture response complete.';
+      const item = { id: `msg_${id}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
+      const events = [
+        { type: 'response.output_item.added', output_index: 0, item: { ...item, status: 'in_progress', content: [] } },
+        { type: 'response.content_part.added', item_id: item.id, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } },
+        { type: 'response.output_text.delta', item_id: item.id, output_index: 0, content_index: 0, delta: text },
+        { type: 'response.output_text.done', item_id: item.id, output_index: 0, content_index: 0, text },
+        { type: 'response.output_item.done', output_index: 0, item },
+        { type: 'response.completed', response: { id, object: 'response', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ];
+      for (const event of events) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      res.end();
     } };
     requests.push(request); nextRequest?.(request); nextRequest = undefined;
   });
@@ -38,8 +52,16 @@ async function fixture(t) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   await writeFile(path.join(root, 'config.toml'), `model_provider="fixture"\nmodel="fixture"\n[model_providers.fixture]\nname="Offline goal fixture"\nbase_url="http://127.0.0.1:${server.address().port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n`);
   bridge = await Bridge.connect({ args: ['app-server', '--stdio'], jsonl: true, env: { ...process.env, CODEX_HOME: root } });
+  bridge.on('notification', (method, p) => {
+    if (['turn/started', 'turn/completed', 'thread/goal/updated', 'error'].includes(method)) {
+      notices.push({ method, turn: p.turn, goal: p.goal, error: p.error });
+    }
+  });
   const thread = (await bridge.rpc('thread/start', { cwd: root, approvalPolicy: 'never', sandbox: 'read-only' })).thread.id;
-  await bridge.rpc('thread/goal/set', { threadId: thread, objective: 'Isolated goal lifecycle fixture', status: 'active', tokenBudget: 10000, origin: 'user' });
+  // An active goal on an idle thread can start a turn before the fixture's
+  // turn/start, which then steers/replaces that model request. Activate only
+  // once the explicit test turn is running so we finish the correct stream.
+  await bridge.rpc('thread/goal/set', { threadId: thread, objective: 'Isolated goal lifecycle fixture', status: 'paused', tokenBudget: 10000, origin: 'user' });
   manager = new Manager(path.join(root, 'state'), thread, { connect: async () => bridge });
   const monitor = await manager.start({ name: 'fixture', options: { cwd: root, watch_file: 'done', timeout_ms: 20000 }, instructions: 'Inspect fixture event' });
   return { bridge, manager, monitor, thread, requests,
@@ -47,7 +69,13 @@ async function fixture(t) {
       const ready = new Promise(resolve => { nextRequest = resolve; });
       const { turn } = await bridge.rpc('turn/start', { threadId: thread, input: [{ type: 'text', text: 'Local fixture.' }] });
       const request = await ready;
-      return { turn, async finish() { const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id, `after provider completion for ${turn.id}`); request.finish(); await done; } };
+      assert.equal(request.turnId, turn.id);
+      await bridge.rpc('thread/goal/set', { threadId: thread, status: 'active', origin: 'user' });
+      return { turn, async finish() {
+        const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id, `after provider completion for ${turn.id}`);
+        request.finish();
+        try { await done; } catch (e) { throw Error(`${e.message}: ${JSON.stringify({ requestTurns: requests.map(r => r.turnId), latest: await latestTurn(bridge, thread), notices })}`); }
+      } };
     },
     wait: () => manager.beginWait({ monitor_ids: [monitor.id], resume_instructions: 'Inspect fixture result', goal_authorization: 'Pause the fixture goal while waiting and resume on its event' }),
     async interrupt(turn) {
