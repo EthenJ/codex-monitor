@@ -86,6 +86,14 @@ test('CLI cards keep all operation data structured and hide inactive monitors fr
   assert.ok(!/[\u001b\u202e]/.test(failure.content[0].text));
 });
 
+test('wait cards distinguish confirmed goal control from notification-only waiting',()=>{
+  const paused=toolResult('monitor_wait',{state:'waiting',goal_control:'paused'}).content[0].text;
+  const unchanged=toolResult('monitor_wait',{state:'waiting',goal_control:'unchanged'}).content[0].text;
+  assert.match(paused,/goal paused/);assert.match(unchanged,/goal unchanged.*active goals may continue/);
+  const report=summarize({wait:{state:'interrupted',goal_control:'unverified',error:'Connection lost'}},'live');
+  assert.equal(report.wait.goal_control,'unverified');assert.equal(report.wait.error,'Connection lost');
+});
+
 test('MCP tools serve the UI and long wait sees mutations without starting a model', {timeout:20000}, async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'monitor-panel-'));const state=path.join(root,'state'),thread=randomUUID(),directory=path.join(state,thread);
   const broker=await ensureBroker(state);const client=new Client({name:'panel-test',version:'1'});

@@ -1,5 +1,9 @@
 # Node plugin validation
 
+## v0.2.3 goal pause and resume fixes
+
+Windows with Node 24.22.0 and Codex 0.166.0 passed **153 tests: 147 passed, six expected skips, zero failures**. Four isolated native App Server tests cover conditional goal waiting, manual pause/resume, interruption and repeated manual pause. See [Windows validation](node-windows-validation.md) for the reproduced defects, Windows startup/cleanup follow-ups and test command, and [v0.2.3 release notes](releases/v0.2.3.md) for behavior and installation. The user's installed plugin is unchanged by these isolated tests. Earlier sections record historical snapshots.
+
 ## v0.2.2 candidate
 
 Typed MCP schemas, read-only preflight validation, `monitor_report` and informational Stop/Interrupt hooks are implemented on `develop`. The current Windows suite has **104 tests: 98 passed and six expected platform/hardware skips**. Real Codex tests use isolated homes and a local synthetic provider; user configuration and hook trust remain unchanged. A deterministic regression verifies the fix for a startup lock released during concurrent service registration. Extended file-observation diagnostics captured Windows directory changes with identical timestamps; preflight and documentation now state the limits of stat-based polling, and readiness fixtures use distinguishable initial metadata without waiting after readiness.

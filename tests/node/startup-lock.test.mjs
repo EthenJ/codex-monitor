@@ -27,3 +27,21 @@ test('startup lock released between contention and metadata inspection is retrie
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+for (const persistent of [false, true]) test(`Windows pending lock deletion retries without bypassing persistent permissions (${persistent})`, {skip:process.platform!=='win32'}, async t=>{
+  const root=await fs.mkdtemp(path.join(tmpdir(),'monitor-lock-delete-')),lock=path.join(root,'startup.lock-node');
+  const mkdir=fs.mkdir;let attempts=0,operations=0;
+  t.mock.timers.enable({apis:['Date'],now:1800000000000});
+  t.mock.method(fs,'mkdir',async(file,...args)=>{
+    if(file===lock && (++attempts===1 || persistent)){
+      if(persistent&&attempts>1)t.mock.timers.setTime(1800000012000);
+      throw Object.assign(Error('Fixture directory pending deletion'),{code:'EPERM'});
+    }
+    return mkdir(file,...args);
+  });syncBuiltinESMExports();
+  try{
+    const result=withStartupLock(root,async()=>{operations++;});
+    if(persistent)await assert.rejects(result,{code:'EPERM'});else await result;
+    assert.equal(attempts,2);assert.equal(operations,persistent?0:1);
+  }finally{t.mock.restoreAll();syncBuiltinESMExports();await fs.rm(root,{recursive:true,force:true});}
+});

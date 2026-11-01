@@ -95,6 +95,143 @@ test('native goal wait preserves budget, resumes after submission', async t => {
   assert.equal(host.goal.status, 'active'); assert.equal(host.goal.tokensUsed, 1);
   assert.deepEqual(host.changes.map(x => Object.keys(x).sort()), [['origin', 'status', 'threadId'], ['origin', 'status', 'threadId']]);
 });
+
+test('equivalent wait registration reuses the wait without another pause', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  const params={monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'};
+  const first=await manager.beginWait(params), second=await manager.beginWait(params);
+  assert.equal(second.id,first.id);assert.equal(second.goal_control,'paused');assert.equal(host.changes.length,1);
+  await assert.rejects(manager.beginWait({...params,resume_instructions:'Different action'}),/already active/);
+});
+
+test('notification-only wait does not claim to pause the native goal', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});
+  assert.equal(wait.goal_control,'unchanged');assert.equal(host.goal.status,'active');assert.equal(host.changes.length,0);
+});
+
+test('expired historical events do not prevent a new wait on a live monitor', async t => {
+  const {manager,start}=await fixture(t), m=await start();
+  manager.event(m.id,{event_type:'file_change',path:'old'});
+  Object.values(manager.events)[0].expires_at=0;
+  const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});
+  assert.equal(wait.state,'waiting');
+});
+
+test('goal edit mutes subsequent selected events but preserves unrelated callbacks', async t => {
+  const {manager,host,start,work}=await fixture(t), m=await start();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Independent'});
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  host.goal.objective='New user goal';host.goal.status='active';
+  manager.event(m.id,{event_type:'file_change',path:'first'});
+  manager.event(other.id,{event_type:'file_change',path:'independent'});await manager.flush();
+  manager.event(m.id,{event_type:'file_change',path:'second'});await manager.flush();
+  assert.equal(manager.wait.state,'cancelled');assert.equal(manager.records[m.id].muted,true);
+  assert.equal(host.submissions.length,1);assert.ok(host.submissions[0].toolOutput.output.includes(other.id));
+  assert.ok(!host.submissions[0].toolOutput.output.includes(m.id));
+});
+
+test('disconnected goal wait never falls through into an ordinary wake without goal restoration', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  host.emit('disconnected','Fixture proxy disconnected');
+  manager.event(m.id,{event_type:'file_change',path:'completed'});await manager.flush();
+  assert.equal(manager.wait.state,'interrupted');assert.equal(host.goal.status,'paused');
+  assert.equal(host.submissions.length,0);assert.equal(manager.records[m.id].muted,true);
+});
+
+test('manual goal pause holds ordinary callbacks until a native resume notification', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  host.goal.status='paused';
+  manager.event(m.id,{event_type:'file_change',path:'completed'});await manager.flush();
+  const event=Object.values(manager.events)[0];
+  assert.equal(host.submissions.length,0);assert.equal(event.state,'pending');
+  assert.equal(event.deferred_reason,'Goal is paused');assert.equal(manager.records[m.id].muted,undefined);
+  await host.rpc('thread/goal/set',{status:'active'});
+  await eventually(()=>host.submissions.length===1);
+  assert.equal(event.state,'submitted');assert.equal(event.deferred_reason,undefined);
+});
+
+test('a notification-only wait cannot bypass a manual goal pause', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});host.goal.status='paused';
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(host.submissions.length,0);assert.equal(manager.wait.state,'waiting');
+  assert.equal(host.changes.length,0);
+});
+
+test('an unrelated event cannot wake an authorized paused goal wait', async t => {
+  const {manager,host,start,work}=await fixture(t), m=await start();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Independent'});
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  manager.event(other.id,{event_type:'file_change',path:'other'});await manager.flush();
+  assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(host.goal.status,'active');assert.equal(manager.wait.state,'delivered');
+  await eventually(()=>host.submissions.length===2);
+});
+
+test('expired held events never replay on resume', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();host.goal.status='paused';
+  manager.event(m.id,{event_type:'file_change'});await manager.flush();
+  const event=Object.values(manager.events)[0];event.expires_at=0;
+  await host.rpc('thread/goal/set',{status:'active'});await manager.flush();
+  assert.equal(event.state,'expired');assert.equal(host.submissions.length,0);
+});
+
+test('native goal edit cancels a waiting subscription before future notifications', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  await host.rpc('thread/goal/set',{status:'paused'});
+  assert.equal(manager.wait.state,'cancelled');assert.equal(manager.records[m.id].muted,true);
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+});
+
+test('manual pause notification wins over an in-flight stale goal read', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  const rpc=host.rpc.bind(host);host.rpc=async(method,params)=>{
+    const result=await rpc(method,params);
+    if(method==='thread/goal/get') await rpc('thread/goal/set',{status:'paused'});
+    return result;
+  };
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(host.submissions.length,0);assert.equal(Object.values(manager.events)[0].deferred_reason,'Goal is paused');
+});
+
+test('same-second manual pause revokes conditional resume even when goal fields are identical', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(manager.wait.state,'cancelled');assert.equal(host.submissions.length,0);
+});
+
+test('goal mutation responses arriving before their notifications do not cancel their own wait', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  const rpc=host.rpc.bind(host);host.rpc=async(method,params)=>{
+    if(method!=='thread/goal/set') return rpc(method,params);
+    host.goal.status=params.status;host.goal.updatedAt++;const goal=structuredClone(host.goal);
+    setImmediate(()=>host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal}));
+    return {goal};
+  };
+  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  assert.equal(manager.wait.state,'waiting');
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();
+  assert.equal(manager.wait.state,'delivered');assert.equal(host.goal.status,'active');
+});
+
+test('a goal edit during pause confirmation never reports a successful pause', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();
+  const rpc=host.rpc.bind(host);host.rpc=async(method,params)=>{
+    const result=await rpc(method,params);
+    if(method==='thread/goal/set'&&params.status==='paused') await rpc('thread/goal/set',{status:'active'});
+    return result;
+  };
+  await assert.rejects(manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'}),/pause not confirmed/);
+  assert.equal(manager.wait.state,'failed');assert.equal(manager.wait.goal_control,'unverified');
+  assert.equal(host.goal.status,'active');assert.equal(manager.records[m.id].muted,true);
+});
 test('later goal edit suppresses wake', async t => {
   const { manager, host, start } = await fixture(t), r = await start();
   await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Evaluate', goal_authorization: 'Pause and resume' });

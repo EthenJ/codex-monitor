@@ -72,7 +72,7 @@ export function renderSummary(tool: string, data: Json, isError = false, mode: D
       lines.push(`  Event · ${label(monitor?.name || event.monitor_id)} · ${label(event.event_type)} · ${label(event.state)}`);
     }
     if (r.summary.unhandled_events > 3) lines.push(`  +${r.summary.unhandled_events - 3} more events to review`);
-    if (r.wait && ['preparing', 'waiting', 'waking'].includes(r.wait.state)) lines.push(`  Goal wait · ${label(r.wait.state)}`);
+    if (r.wait && ['preparing', 'waiting', 'waking'].includes(r.wait.state)) lines.push(`  Goal wait · ${label(r.wait.state)} · goal ${label(r.wait.goal_control || 'unverified')}`);
     return lines.join('\n');
   }
   if (tool === 'monitor_recovery') {
@@ -84,7 +84,7 @@ export function renderSummary(tool: string, data: Json, isError = false, mode: D
     return `Monitor · ${count} ${count === 1 ? 'event' : 'events'} acknowledged${view ? '\n'+compactReport(view) : ''}`;
   }
   if (tool === 'monitor_cancel_wait') return 'Monitor · wait cancelled · goal unchanged';
-  if (tool === 'monitor_wait') return `Monitor · wait ${state(data.state)}${data.reason ? ` · ${label(data.reason)}` : ''}`;
+  if (tool === 'monitor_wait') return `Monitor · wait ${state(data.state)}${data.goal_control ? ` · goal ${label(data.goal_control)}` : ''}${data.goal_control === 'unchanged' ? ' (active goals may continue)' : ''}${data.reason || data.error ? ` · ${label(data.reason || data.error)}` : ''}`;
   const lines = [`Monitor · ${label(data.name || data.id || tool)} · ${state(data.state)}`];
   if (mode === 'verbose' && tool === 'monitor_start' && data.deadline != null) lines.push(`  Until ${at(data.deadline)}`);
   return lines.join('\n');

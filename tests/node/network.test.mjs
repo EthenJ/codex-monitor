@@ -66,7 +66,10 @@ async function fixture(t, config = {}) {
   t.after(async () => {
     recovery.close(); await bridge.close();
     for (const socket of state.sockets) socket.destroy();
-    await new Promise(r => server.close(r)); await rm(root, { recursive: true, force: true });
+    await new Promise(r => server.close(r));
+    // Windows can release the native goal SQLite handle shortly after process
+    // shutdown. Retry cleanup for a bounded interval; never ignore a final error.
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
   await recovery.configure({ enabled: true, authorization: 'Fixture: retry transient errors, stop on manual interruption',
     max_attempts: 2, retry_interval_ms: 1000, check_interval_ms: 1000, max_elapsed_ms: 10000, ...config });
