@@ -18,7 +18,7 @@ export async function rpc(directory: string, method: string, params: Json = {}, 
   if (!response.ok || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {});
   return result.result;
 }
-async function lock(directory: string, operation: () => Promise<void>) {
+export async function withStartupLock(directory: string, operation: () => Promise<void>) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const location = path.join(directory, 'startup.lock-node');
   const deadline = now() + 12000;
@@ -29,7 +29,12 @@ async function lock(directory: string, operation: () => Promise<void>) {
       try {
         const owner = JSON.parse(await readFile(path.join(location, 'owner.json'), 'utf8'));
         try { process.kill(owner.pid, 0); } catch (error: any) { if (error.code === 'ESRCH') { await rm(location, { recursive: true, force: true }); continue; } }
-      } catch { if (now() - (await stat(location)).mtimeMs > 30000) throw Error('Stale startup lock without verifiable owner; inspect state'); }
+      } catch {
+        // The owner can release the directory between mkdir/readFile/stat.
+        // A missing lock is contention that ended, not a failed startup.
+        try { if (now() - (await stat(location)).mtimeMs > 30000) throw Error('Stale startup lock without verifiable owner; inspect state'); }
+        catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+      }
       if (now() >= deadline) throw Error('Monitor startup lock busy');
       await delay(50);
     }
@@ -58,7 +63,7 @@ async function reachable(directory: string) {
 }
 export async function ensureBroker(root = stateRoot()) {
   const directory = path.join(root, 'broker');
-  await lock(directory, async () => { if (!await reachable(directory)) await launch(directory); });
+  await withStartupLock(directory, async () => { if (!await reachable(directory)) await launch(directory); });
   return directory;
 }
 export async function ensureService(threadId: string, root = stateRoot(), useBroker = true): Promise<string> {
@@ -72,7 +77,7 @@ export async function ensureService(threadId: string, root = stateRoot(), useBro
   // Only the external broker calls this with useBroker=false. Its children are
   // already independent of the MCP host; a second job breakaway is unnecessary
   // and can be denied by an enclosing Windows runner/job policy.
-  await lock(directory, async () => { if (!await reachable(directory)) await launch(directory, threadId, useBroker); });
+  await withStartupLock(directory, async () => { if (!await reachable(directory)) await launch(directory, threadId, useBroker); });
   return directory;
 }
 export async function serve(directory: string, threadId?: string) {

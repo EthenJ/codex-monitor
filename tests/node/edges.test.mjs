@@ -1,4 +1,5 @@
 import test from 'node:test';
+import chokidar from 'chokidar';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, rename, utimes } from 'node:fs/promises';
@@ -258,6 +259,19 @@ for (const backend of ['native', 'polling']) {
 
   test(`${backend} ready accepts immediate nested creates, rewrites and replacements`, async t => {
     const { root, cleanups } = await fixture(t);
+    let trace = [];
+    const originalWatch = chokidar.watch;
+    t.mock.method(chokidar, 'watch', (target, options) => {
+      const ignored = options.ignored;
+      const watcher = originalWatch(target, { ...options, ignored: (file, stats) => {
+        if (stats) trace.push({ filter: file, stats });
+        return ignored(file, stats);
+      } });
+      watcher.on('raw', (...args) => trace.push({ raw: args }));
+      watcher.on('all', (...args) => trace.push({ all: args }));
+      watcher.on('ready', () => trace.push({ ready: true }));
+      return watcher;
+    });
     // Exercise the first subscription tick, which previously raced a directory rescan.
     for (let attempt = 0; attempt < (backend === 'polling' ? 50 : 6); attempt++) {
       const work = path.join(root, String(attempt)), nested = path.join(work, 'nested'), events = [];
@@ -265,6 +279,7 @@ for (const backend of ['native', 'polling']) {
       const existing = path.join(work, 'existing.ckpt'), created = path.join(nested, 'new.ckpt');
       await writeFile(existing, 'old');
       const before = await stat(nested);
+      trace = [];
       const sensor = startSensor('watchdog', validateOptions('watchdog', {
         cwd: root, watch_directory: work, recursive: true, pattern: '*.ckpt', file_backend: backend,
         poll_ms: 20, timeout_ms: 10000, debounce_ms: 0,
@@ -285,7 +300,7 @@ for (const backend of ['native', 'polling']) {
         events.length = 0;
         await writeFile(existing, 'new');
         await eventually(() => events.some(e => e.path === existing && e.change === 'created'));
-      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events, before, after })); throw error; }
+      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events, before, after, trace }, (_key, value) => typeof value === 'bigint' ? String(value) : value)); throw error; }
       finally { await sensor.stop(); }
     }
   });
