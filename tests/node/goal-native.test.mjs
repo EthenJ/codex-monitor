@@ -8,11 +8,11 @@ import { Bridge, getGoal, latestTurn } from '../../codex-monitor/runtime/bridge.
 import { Manager } from '../../codex-monitor/runtime/manager.js';
 
 const native = { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 25000 };
-function notice(bridge, method, predicate = () => true) {
+function notice(bridge, method, predicate = () => true, label = '') {
   return new Promise((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); bridge.off('notification', listener); };
     const listener = (m, p) => { if (m === method && predicate(p)) { cleanup(); resolve(p); } };
-    const timer = setTimeout(() => { cleanup(); reject(Error(`Missing ${method}`)); }, 8000);
+    const timer = setTimeout(() => { cleanup(); reject(Error(`Missing ${method} ${label}`)); }, 8000);
     bridge.on('notification', listener);
   });
 }
@@ -47,11 +47,11 @@ async function fixture(t) {
       const ready = new Promise(resolve => { nextRequest = resolve; });
       const { turn } = await bridge.rpc('turn/start', { threadId: thread, input: [{ type: 'text', text: 'Local fixture.' }] });
       const request = await ready;
-      return { turn, async finish() { const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id); request.finish(); await done; } };
+      return { turn, async finish() { const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id, `after provider completion for ${turn.id}`); request.finish(); await done; } };
     },
     wait: () => manager.beginWait({ monitor_ids: [monitor.id], resume_instructions: 'Inspect fixture result', goal_authorization: 'Pause the fixture goal while waiting and resume on its event' }),
     async interrupt(turn) {
-      const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id);
+      const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id, `after interrupt of ${turn.id}`);
       await bridge.rpc('turn/interrupt', { threadId: thread, turnId: turn.id }); await done;
     },
   };
@@ -68,8 +68,11 @@ test('native Manager pauses continuation, leaves current turn running, and resum
   const goal = await getGoal(f.bridge, f.thread);
   assert.equal(goal.status, 'active'); assert.equal(goal.objective, 'Isolated goal lifecycle fixture'); assert.equal(goal.tokenBudget, 10000);
   assert.equal(f.manager.wait.state, 'delivered'); assert.equal(f.manager.wait.goal_control, 'resumed');
-  assert.equal(Object.values(f.manager.events)[0].state, 'submitted');
-  await f.interrupt(await latestTurn(f.bridge, f.thread));
+  const event = Object.values(f.manager.events)[0];
+  assert.equal(event.state, 'submitted'); assert.notEqual(event.submitted_turn, original.turn.id);
+  // The history read can briefly lag turn/start acceptance. Interrupt the
+  // accepted callback ID, never the previous completed turn from that snapshot.
+  await f.interrupt({ id: event.submitted_turn });
 });
 
 test('native manual pause holds callbacks and resume releases them without changing the goal', native, async t => {
