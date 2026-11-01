@@ -192,8 +192,8 @@ export async function inspect(root, config, { env = process.env, execute = run }
       );
   }
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (manifest.name !== 'codex-monitor' || manifest.version !== '0.2.2')
-    throw Error('Expected the codex-monitor v0.2.2 package');
+  if (manifest.name !== 'codex-monitor' || manifest.version !== '0.2.3')
+    throw Error('Expected the codex-monitor v0.2.3 package');
   npmCommand(env);
   if (config.hooks) {
     const definitions = JSON.parse(await readFile(path.join(root, 'hooks/hooks.json'), 'utf8'));
@@ -273,7 +273,7 @@ export async function apply(
     if (e.code === 'EEXIST') throw Error(`Another installation may be running: ${lock}`);
     throw e;
   }
-  const bundle = path.join(parent, `0.2.2-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  const bundle = path.join(parent, `0.2.3-${Date.now()}-${randomUUID().slice(0, 8)}`);
   const context = detected.context;
   const codex = (args) => execute(detected.command, args, context);
   let registryChanged = false;
@@ -319,9 +319,9 @@ export async function apply(
     await codex(['plugin', 'marketplace', 'add', bundle, '--json']);
     await codex(['plugin', 'add', pluginId, '--json']);
     const result = JSON.parse(await codex(['plugin', 'list', '--json']));
-    if (!result.installed.some((p) => p.pluginId === pluginId && p.version === '0.2.2' && p.enabled))
-      throw Error('Codex did not report the enabled v0.2.2 installation');
-    const cache = path.join(config.codex_home, 'plugins/cache/codex-monitor/codex-monitor/0.2.2');
+    if (!result.installed.some((p) => p.pluginId === pluginId && p.version === '0.2.3' && p.enabled))
+      throw Error('Codex did not report the enabled v0.2.3 installation');
+    const cache = path.join(config.codex_home, 'plugins/cache/codex-monitor/codex-monitor/0.2.3');
     if (!existsSync(path.join(cache, 'codex-monitor/runtime/server.js')))
       throw Error('Installed cache was not found; inspect codex plugin list');
     await execute(process.execPath, [path.join(cache, 'codex-monitor/runtime/setup-probe.js')], {
@@ -349,7 +349,7 @@ export async function apply(
       }
     }
     const receipt = {
-      version: '0.2.2',
+      version: '0.2.3',
       installed_at: new Date().toISOString(),
       bundle,
       cache,

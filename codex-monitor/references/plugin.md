@@ -140,7 +140,13 @@ Example authorization: “When only training remains, pause this goal; resume it
 
 Original goal viewing/editing/status remain in Codex. The plugin preserves objective, budget and usage, pauses the goal during external waiting, sends a native result, then resumes the same unchanged goal. Without authorization the wait does not suppress native continuation. Release is ANY selected monitor.
 
+The wait result distinguishes `goal_control: paused` (pause confirmed), `unchanged` (notification-only waiting), `resumed` (resume confirmed), and `unverified` (control outcome must be inspected). These record the wait operation's control result, not a perpetual verification of the native goal. Equivalent monitor sets, instructions and authorization reuse the same active wait. Expired historical events do not block a new wait.
+
+Native goal pause does not interrupt the current turn or stop running tools. After a confirmed pause the agent must finish its status report and yield; stopping the current turn is a separate host action. While a goal is manually paused, ordinary callbacks remain pending with `deferred_reason: Goal is paused`. Native goal updates release them after resume, subject to expiry. Only selected events from an authorized wait may wake its paused goal; unrelated events remain held. No model polling or recurring dispatch timer is used to wait for resume.
+
 Later user edits, cancellation, exhausted budget, lost connection or ambiguous mutation stop restoration. Final accounting from the pausing turn may increase. The API lacks atomic compare-and-set; a user action racing the final verification remains a limitation.
+
+Cancelled or disconnected waits mute their selected monitors, preventing later events from falling through into ordinary callbacks. Independent monitors retain their own delivery policy. Disconnect is deliberately not a transparent goal resume: inspect current state and explicitly rearm when appropriate. A submitted callback cannot be recalled, and pause/submit/resume are separate host operations rather than an atomic transaction.
 
 If a pending wake is acknowledged or expires, the wait becomes `interrupted` and leaves the goal unchanged. If every selected observer ends without a deliverable event, it becomes `failed`. Muted observers cannot create another wait; inspect their state and explicitly register a new observer when needed. These cases require reconciliation rather than an automatic goal resume.
 

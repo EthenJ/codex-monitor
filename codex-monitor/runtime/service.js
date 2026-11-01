@@ -23,12 +23,27 @@ export async function withStartupLock(directory, operation) {
     const location = path.join(directory, 'startup.lock-node');
     const deadline = now() + 12000;
     while (true) {
+        let acquired = false;
         try {
             await mkdir(location);
+            acquired = true;
             atomicJson(path.join(location, 'owner.json'), { pid: process.pid });
             break;
         }
         catch (e) {
+            if (acquired) {
+                await rm(location, { recursive: true, force: true });
+                throw e;
+            }
+            // Windows may report EPERM while a contender's removed lock directory
+            // is still pending deletion. Retry acquisition within the same deadline;
+            // a persistent permission error still fails without running operation.
+            if (process.platform === 'win32' && e.code === 'EPERM') {
+                if (now() >= deadline)
+                    throw e;
+                await delay(50);
+                continue;
+            }
             if (e.code !== 'EEXIST')
                 throw e;
             try {
