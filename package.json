@@ -1,6 +1,6 @@
 {
   "name": "codex-monitor",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "Event-driven workload monitoring and bounded Codex session recovery",
@@ -9,6 +9,7 @@
     "node": ">=22.22.0"
   },
   "scripts": {
+    "setup": "node install.mjs",
     "bootstrap": "node codex-monitor/runtime/cli.js bootstrap"
   },
   "dependencies": {

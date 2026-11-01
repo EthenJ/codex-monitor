@@ -44,6 +44,10 @@ export function validateOptions(kind, raw, stateDirectory) {
     }
     if (o.watch_file && o.watch_directory)
         throw Error('Choose watch_file or watch_directory');
+    if (o.gpu_recover_above !== undefined && o.gpu_util_below === undefined)
+        throw Error('gpu_recover_above requires gpu_util_below');
+    if (o.report_recovery && !o.stalled_for_ms && o.gpu_util_below === undefined)
+        throw Error('report_recovery requires a file inactivity or GPU threshold');
     for (const key of ['watch_file', 'watch_directory'])
         if (o[key])
             o[key] = path.resolve(o.cwd, text(o[key], key, 4096));

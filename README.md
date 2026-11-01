@@ -2,28 +2,27 @@
 
 A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
 
-Version **0.2.1** builds on the v0.2 Node plugin with fixed-interval recovery and optional coverage of unlisted failures. The published `v0.2` tag retains package 0.2.0; earlier v0.2/v0.3 development-preview labels were not public releases.
+Version **0.2.2** adds interactive installation, typed MCP configuration, preflight validation, compact event results, an optional live status panel and concise reports at turn end. Fixed-interval recovery and optional coverage of unlisted failures from 0.2.1 are preserved.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
 ## Install
 
-Requires Node.js 22.22+ (24 recommended) and a compatible local Codex daemon. Validated with Codex 0.166.0.
+Requires Node.js 22.22+ (24 recommended), npm, Codex CLI 0.166.0+ and a compatible local Codex daemon. Validated with Codex 0.166.0.
 
-From the deployment checkout or extracted release package:
+From the complete repository or extracted release package, run in a normal terminal:
 
 ```text
-npm ci --omit=dev
-npm run bootstrap
-codex plugin marketplace add .
-codex plugin add codex-monitor@codex-monitor
+node install.mjs
 ```
 
-Restart Codex to load the seven tools. Disable older standalone copies of the skill to avoid duplicate guidance. Bootstrap starts a hidden launcher outside the MCP client's process job; run it once per login/reboot from an external terminal. It installs no OS service or scheduled task.
+The wizard asks for the Codex configuration directory, client, compact/verbose output, automatic Stop/Interrupt reports and launcher startup. It shows the plan before installing. An existing installation requires an explicit replacement choice. Use `node install.mjs --dry-run` to preview, or [agent-assisted configuration](codex-monitor/references/installation.md#preview-or-install-from-an-agent-session) for a noninteractive shell.
 
-When using the source checkout on `develop`, run `npm ci` and `npm run build` before bootstrap and installation instead. The Node plugin has no Python runtime dependency. Native bindings use Koffi's published prebuilt binaries where available.
+Setup builds a source checkout when necessary, stages a complete deployment bundle, installs production dependencies, and executes an isolated MCP probe before registering the plugin. It preserves monitor state and unrelated Codex settings. It refuses to replace an installation with active monitors, waits, recovery or unresolved pending deliveries; reconcile those first. Avoid starting monitors during an upgrade. Recovery is not enabled by installation.
 
-When upgrading from v0.1, stop its old observers and disable/remove the standalone skill before enabling the plugin, so both versions do not send callbacks. Install the complete package, not just its inner skill directory. For an installed preview, stop its monitors/waits/recovery and broker, remove the old plugin with `codex plugin remove codex-monitor@codex-monitor`, then install this version and restart Codex. Old monitor state is not automatically migrated or rearmed; register the required observers again. Existing training processes observed by watchdogs remain independent.
+Finish installation, then fully reopen Codex to load all eleven tools. Check `/plugins` and `/mcp`, and ask Codex to actually call `monitor_display` in the resumed conversation. If reports were included, review this plugin's exact hooks in `/hooks`. Installing does not grant hook trust; changing the installed bundle after review invalidates its fingerprint. The launcher must be started again after login/reboot from an external terminal; no OS service is installed. Setup prints the exact command and activation checklist. See the [installation guide](codex-monitor/references/installation.md) for simulation and upgrade details.
+
+For manual installation of a deployment package, run `npm ci --omit=dev`, `npm run bootstrap`, `codex plugin marketplace add .`, and `codex plugin add codex-monitor@codex-monitor`, then follow the same activation checklist. Build a source checkout with `npm ci` and `npm run build` first. When upgrading from v0.1, stop its standalone observers and disable/remove the old skill to avoid duplicate callbacks. The Node plugin has no Python runtime dependency; native bindings use Koffi's published prebuilt binaries where available.
 
 ## Typical request
 
@@ -34,10 +33,22 @@ When upgrading from v0.1, stop its old observers and disable/remove the standalo
 1. `monitor_start` registers an observer and confirms readiness.
 2. A separate per-thread Node service watches the workload without calling the model for healthy progress.
 3. Events are saved, filtered for duplicates/expiry and submitted through `turn/start.toolOutput` to the existing daemon.
-4. Codex reads evidence and uses `monitor_ack` to acknowledge handled event IDs. Pending results already handled independently are suppressed.
+4. Codex uses `monitor_event` to inspect the trigger and evidence, then supplies a resolution after handling. The same card acknowledges the events and reports current status. Pending results already handled independently are suppressed.
 5. With authorization, the native goal pauses while waiting and resumes after event submission and state verification.
 
-Tools: `monitor_start`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
+Tools: `monitor_start`, `monitor_event`, `monitor_display`, `monitor_validate`, `monitor_report`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
+
+MCP clients discover parameter types, ranges and enums through `tools/list`. `monitor_start` infers command/watchdog mode and applies finite defaults. Commands without `match` report exit only. Start automatically checks configuration and local prerequisites. Use `monitor_validate` to preview normalized settings and verify the exact loaded host thread without starting a workload or recovery. See [minimal examples and validation](codex-monitor/references/plugin.md#typed-configuration-and-preflight).
+
+`monitor_report` displays one human-readable line, such as `Monitor · 2 running` or `Monitor · none running`. Bundled `Stop` and `Interrupt` hooks emit the same concise summary without waking the model. Cancelled/stopped monitors and lifecycle history are omitted from routine text; details remain in structured tool data and `monitor_status`. Unverified saved state is reported as unavailable, never as currently running. The skill guides agents to stop obsolete observers and acknowledge handled events while preserving monitoring for pending work. Review and trust the installed hooks in `/hooks`; installation alone does not trust hooks. Client rendering varies, and `codex exec --json` may omit hook messages. No new turn is submitted merely to show status.
+
+Complete every build, dependency installation and file copy before reviewing hooks. Codex fingerprints the entire installed plugin bundle; modifying it afterward can cause `plugin contents changed; hook approval required`. Review the updated hooks again, then verify a fresh scan and execution. Cached trust metadata in an already-loaded thread is insufficient; see the [installation reference](codex-monitor/references/plugin.md).
+
+All eleven tools include readable summaries and an MCP Apps view. On compatible hosts, `monitor_report` opens a live panel with workload counts, recovery state and bounded lifecycle transitions; other operation cards offer live updates on demand. `monitor_event` highlights the selected triggers, including exit status and whether action is still needed. Compact mode omits inactive monitors and shows the latest eight relevant transitions; verbose displays the full bounded history. The panel waits for changes through bounded MCP calls without involving the agent. Hidden views stop re-arming, and disconnected views require explicit reconnection. Background transitions update the timeline; independent native chat cards still require a real tool call. Hosts without MCP Apps retain text and structured results. Codex 0.166.0 exposes MCP Apps behind the experimental `enable_mcp_apps` feature.
+
+Codex CLI 0.166.0 displays text tool results, not the HTML panel. All tools therefore use plain-text cards without Markdown tables or duplicate JSON. `monitor_display(thread_id, mode: "compact" | "verbose")` selects the workflow per thread without restarting. Compact is the default: start/stop and event cards carry fresh status, so the agent can omit redundant diagnostic and final-report calls. The previous four-call callback sequence becomes an event inspection followed by one combined acknowledgement/status card; already-inspected events can use the combined call alone. Verbose retains separate status/ack/report calls and adds diagnostic details. Errors remain visible in either mode. Every actual call still has the CLI's host-owned `Called` header; the plugin cannot hide or merge those headers. Enabling the engine's MCP Apps flag does not add an HTML renderer to the terminal. The optional desktop panel remains separately unverified. See the [validation evidence](https://github.com/EthenJ/codex-monitor/blob/develop/docs/releases/v0.2.2.md#validation).
+
+Native event callbacks also use readable text with exact monitor/event references. Raw workload evidence and registered actions are retrieved through `monitor_status`, rather than printed in the notification. Recovery notifications identify the retry attempt and failed turn. Event delivery still uses the native tool-output channel.
 
 Commands are owned and cleaned up on cancellation. Watchdogs never terminate existing training PIDs. File/GPU rules support startup grace, dwell times, aggregation and recovery hysteresis. Native file notifications and local GPU/PID sampling do not wake the model. Read [usage and lifecycle contracts](codex-monitor/references/plugin.md).
 
@@ -53,7 +64,7 @@ Source, tests and build tooling live on the `develop` branch. Run these commands
 
 ```text
 npm test
-npm run package -- dist/codex-monitor-v0.2.1
+npm run package -- dist/codex-monitor-v0.2.2
 ```
 
 Deployment packages include compiled JavaScript, production dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, development dependencies, reports, caches and local state are excluded. Deployment pull requests target `main`; development stays on `develop`. The v0.1 tag remains available for the standalone release.
