@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { atomicJson, bounded, delay, integer, now, readJson, stateRoot, threadKey, VERSION } from './common.js';
 import { launchWindowsDetached } from './windows.js';
 import { Manager } from './manager.js';
+import { CAPACITY_ERROR, MonitorCapacityError } from './capacity.js';
 export async function rpc(directory, method, params = {}, timeout = 20000, signal) {
     const endpoint = readJson(path.join(directory, 'endpoint.json'));
     const response = await fetch(`http://127.0.0.1:${endpoint.port}/rpc`, { method: 'POST',
@@ -15,7 +16,7 @@ export async function rpc(directory, method, params = {}, timeout = 20000, signa
         body: JSON.stringify({ method, params }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
     const result = await response.json();
     if (!response.ok || result.error)
-        throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {});
+        throw Object.assign(Error(result.error || 'Local monitor request failed'), result.validation ? { report: result.validation } : {}, result.code === CAPACITY_ERROR ? { code: result.code, capacity: result.capacity, guidance: result.guidance } : {});
     return result.result;
 }
 export async function withStartupLock(directory, operation) {
@@ -244,7 +245,9 @@ export async function serve(directory, threadId) {
         }
         catch (e) {
             response.setHeader('Content-Type', 'application/json');
-            response.end(JSON.stringify({ error: bounded(e), ...(e.report ? { validation: e.report } : {}) }));
+            response.end(JSON.stringify({ error: bounded(e),
+                ...(e instanceof MonitorCapacityError ? { code: e.code, capacity: e.capacity, guidance: e.guidance } : {}),
+                ...(e.report ? { validation: e.report } : {}) }));
         }
         finally {
             requests--;

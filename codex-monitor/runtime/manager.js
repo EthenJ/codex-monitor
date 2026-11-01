@@ -7,8 +7,9 @@ import { startSensor } from './sensors.js';
 import { validateRequest, ValidationFailure } from './validation.js';
 import { Recovery } from './recovery.js';
 import { Changes } from './changes.js';
-import { eventReviewSchema } from './contracts.js';
+import { eventReviewSchema, DEFAULT_RESUME_INSTRUCTIONS, resumeInstructionsSchema } from './contracts.js';
 import { displaySettings } from './display.js';
+import { monitorCapacity, MonitorCapacityError } from './capacity.js';
 const PENDING = new Set(['pending', 'sending', 'unknown']);
 const WAITING = new Set(['preparing', 'waiting', 'waking']);
 const PAUSE_BARRIER = 'Goal is paused; awaiting the current turn to finish';
@@ -84,7 +85,8 @@ export class Manager {
         const records = monitorId ? [this.records[monitorId]] : Object.values(this.records);
         return structuredClone({ version: VERSION, thread_id: this.threadId, checked_at: now(), service_pid: process.pid,
             revision: this.changes.revision, changes: this.changes.entries,
-            monitors: records.map(r => monitorId ? r : { id: r.id, name: r.name, kind: r.kind, state: r.state, deadline: r.deadline, backend: r.backend,
+            capacity: monitorCapacity(this.jobs.size),
+            monitors: records.map(r => monitorId ? r : { id: r.id, name: r.name, kind: r.kind, state: r.state, muted: r.muted, deadline: r.deadline, backend: r.backend,
                 observed_pid: r.observed_pid, latest_event: r.latest_event, error: r.error, outcome: r.outcome }),
             events: Object.values(this.events).filter(e => !monitorId || e.monitor_id === monitorId).map(e => monitorId ? e : {
                 id: e.id, monitor_id: e.monitor_id, event_type: e.event_type, state: e.state, occurred_at: e.occurred_at, expires_at: e.expires_at,
@@ -208,10 +210,11 @@ export class Manager {
                 if (record.name === name && ['starting', 'armed', 'stopping'].includes(record.state)) {
                     if (record.fingerprint !== fingerprint)
                         throw Error('Live name already has different options');
-                    return structuredClone(record);
+                    return structuredClone({ ...record, capacity: monitorCapacity(this.jobs.size) });
                 }
-            if (this.jobs.size >= 32)
-                throw Error('At most 32 active monitors per thread');
+            const capacity = monitorCapacity(this.jobs.size);
+            if (capacity.state === 'full')
+                throw new MonitorCapacityError(capacity);
             for (const key of Object.keys(this.records)) {
                 if (Object.keys(this.records).length < 100)
                     break;
@@ -258,7 +261,7 @@ export class Manager {
             if (this.guardedMonitor(key) && this.wait?.wake_scope === 'thread' && WAITING.has(this.wait.state))
                 this.wait.guard_ids.push(key);
             this.save();
-            return structuredClone(record);
+            return structuredClone({ ...record, capacity: monitorCapacity(this.jobs.size) });
         });
     }
     event(monitorId, raw) {
@@ -364,7 +367,14 @@ export class Manager {
             const ids = params.monitor_ids ?? [];
             if (!Array.isArray(ids) || ids.some(key => typeof key !== 'string') || scope === 'selected' && !ids.length)
                 throw Error('Select monitor IDs');
-            const requested = [...new Set(ids)].sort(), instructions = text(params.resume_instructions, 'resume_instructions');
+            const requested = [...new Set(ids)].sort();
+            const suppliedInstructions = resumeInstructionsSchema.parse(params.resume_instructions);
+            const currentWait = this.wait;
+            // Only a live wait may retain its context. Cancelled/delivered/restarted
+            // waits never supply instructions to a new dependency or another thread.
+            // Goal ownership is verified below before an existing wait is returned.
+            const instructions = suppliedInstructions ?? (currentWait && WAITING.has(currentWait.state)
+                ? currentWait.instructions : DEFAULT_RESUME_INSTRUCTIONS);
             const authorization = params.goal_authorization === undefined
                 ? this.goalPause.owner === 'plugin' ? this.goalPause.authorization : undefined
                 : text(params.goal_authorization, 'goal_authorization');

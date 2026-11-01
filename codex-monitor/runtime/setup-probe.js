@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 // Fresh, isolated MCP connection. Never contacts a model, starts a workload or trusts hooks.
 const root = await mkdtemp(path.join(tmpdir(), 'codex-monitor-setup-'));
-const client = new Client({ name: 'codex-monitor-setup', version: '0.2.3' });
+const client = new Client({ name: 'codex-monitor-setup', version: '0.2.4' });
 try {
     await client.connect(new StdioClientTransport({
         command: process.execPath,

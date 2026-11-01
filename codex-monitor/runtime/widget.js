@@ -99,7 +99,7 @@ export const widgetHtml = String.raw `<!doctype html>
     if(m.method==='ui/notifications/tool-input'){const candidate=m.params?.arguments?.thread_id||m.params?.thread_id;if(!thread&&typeof candidate==='string')thread=candidate;}
     if(m.method==='ui/resource-teardown'){disposed=true;wanted=false;window.parent.postMessage({jsonrpc:'2.0',id:m.id,result:{}},'*');}
   });
-  request('ui/initialize',{appInfo:{name:'codex-monitor',version:'0.2.3'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(()=>{
+  request('ui/initialize',{appInfo:{name:'codex-monitor',version:'0.2.4'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(()=>{
     initialized=true;notify('ui/notifications/initialized',{});$('live').disabled=!thread;pump();
   }).catch(()=>{status('Snapshot only',true);$('notice').textContent='This host does not provide the MCP Apps bridge. Use the native tool result.';});
 })();

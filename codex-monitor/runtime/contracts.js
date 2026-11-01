@@ -8,6 +8,8 @@ export const eventReviewSchema = z.strictObject({
     event_ids: z.array(z.string().uuid()).min(1).max(8).describe('Exact IDs from the native callback; at most eight events.'),
     resolution: str(1000).optional().describe('Omit to inspect. Supply only after handling or deliberately dismissing these events; acknowledges them and returns final status.'),
 });
+export const DEFAULT_RESUME_INSTRUCTIONS = 'Inspect the triggering monitor event and its registered instructions, reconcile completed effects, and continue the existing task within the user\'s authorization.';
+export const resumeInstructionsSchema = str(2000).optional().describe('Usually omit: reuse the current verified wait instructions, or inspect the event and continue the existing task. Supply a short next action only when changing it; do not repeat task history.');
 const shared = {
     cwd: str().describe('Absolute workload directory. Relative watched paths resolve here.'),
     timeout_ms: int(1, week).optional().describe('Finite observer lifetime in milliseconds; default 1800000.'),
