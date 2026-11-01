@@ -269,8 +269,10 @@ for (const backend of ['native', 'polling']) {
         poll_ms: 20, timeout_ms: 10000, debounce_ms: 0,
       }, path.join(root, 'state')), event => events.push(event), () => {});
       cleanups.push(() => sensor.stop()); await sensor.ready;
+      const before = await stat(nested);
       await writeFile(created, 'created');
       await writeFile(existing, 'new');
+      const after = await stat(nested);
       try {
         await eventually(() => [created, existing].every(file => events.some(e => e.path === file)));
         events.length = 0;
@@ -283,7 +285,7 @@ for (const backend of ['native', 'polling']) {
         events.length = 0;
         await writeFile(existing, 'new');
         await eventually(() => events.some(e => e.path === existing && e.change === 'created'));
-      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events })); throw error; }
+      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events, before, after })); throw error; }
       finally { await sensor.stop(); }
     }
   });
