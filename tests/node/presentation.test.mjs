@@ -92,6 +92,8 @@ test('wait cards distinguish confirmed goal control from notification-only waiti
   assert.match(paused,/goal paused/);assert.match(unchanged,/goal unchanged.*active goals may continue/);
   const report=summarize({wait:{state:'interrupted',goal_control:'unverified',error:'Connection lost'}},'live');
   assert.equal(report.wait.goal_control,'unverified');assert.equal(report.wait.error,'Connection lost');
+  const refusal=toolResult('monitor_wait',{state:'goal_pause_required',goal_control:'unchanged',error:{message:'Goal is still active; reuse existing authorization'}},true);
+  assert.equal(refusal.isError,true);assert.match(refusal.content[0].text,/request failed.*Goal is still active/);
 });
 
 test('MCP tools serve the UI and long wait sees mutations without starting a model', {timeout:20000}, async()=>{

@@ -104,14 +104,33 @@ test('equivalent wait registration reuses the wait without another pause', async
   await assert.rejects(manager.beginWait({...params,resume_instructions:'Different action'}),/already active/);
 });
 
-test('notification-only wait does not claim to pause the native goal', async t => {
+test('active goal never silently becomes a notification-only wait when authorization is omitted', async t => {
   const {manager,host,start}=await fixture(t), m=await start();
   const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});
+  assert.equal(wait.state,'goal_pause_required');assert.equal(wait.error.code,'GOAL_PAUSE_AUTHORIZATION_REQUIRED');
+  assert.equal(manager.wait,null);assert.equal(manager.records[m.id].muted,undefined);
   assert.equal(wait.goal_control,'unchanged');assert.equal(host.goal.status,'active');assert.equal(host.changes.length,0);
+  const retried=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Previously authorized: pause while waiting and resume on completion'});
+  assert.equal(retried.state,'waiting');assert.equal(retried.goal_control,'paused');assert.equal(host.goal.status,'paused');
+});
+
+test('notification waiting still works when there is no native goal', async t => {
+  const {manager,host,start}=await fixture(t), m=await start();host.goal=null;
+  const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});
+  assert.equal(wait.state,'waiting');assert.equal(wait.goal_control,'unchanged');assert.equal(host.changes.length,0);
+});
+
+test('reused notification wait cannot hide a subsequently activated goal', async t => {
+  const {manager,host,start}=await fixture(t), m=await start(),goal=host.goal;host.goal=null;
+  const params={monitor_ids:[m.id],resume_instructions:'Inspect'};
+  assert.equal((await manager.beginWait(params)).state,'waiting');host.goal=goal;
+  assert.equal((await manager.beginWait(params)).state,'goal_pause_required');
+  assert.equal(manager.wait.state,'interrupted');assert.equal(manager.records[m.id].muted,undefined);
+  assert.equal((await manager.beginWait({...params,goal_authorization:'Pause while waiting and resume on completion'})).goal_control,'paused');
 });
 
 test('expired historical events do not prevent a new wait on a live monitor', async t => {
-  const {manager,start}=await fixture(t), m=await start();
+  const {manager,host,start}=await fixture(t), m=await start();host.goal=null;
   manager.event(m.id,{event_type:'file_change',path:'old'});
   Object.values(manager.events)[0].expires_at=0;
   const wait=await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});
@@ -154,7 +173,7 @@ test('manual goal pause holds ordinary callbacks until a native resume notificat
 
 test('a notification-only wait cannot bypass a manual goal pause', async t => {
   const {manager,host,start}=await fixture(t), m=await start();
-  await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});host.goal.status='paused';
+  host.goal.status='paused';await manager.beginWait({monitor_ids:[m.id],resume_instructions:'Inspect'});
   manager.event(m.id,{event_type:'process_exit'});await manager.flush();
   assert.equal(host.submissions.length,0);assert.equal(manager.wait.state,'waiting');
   assert.equal(host.changes.length,0);
@@ -536,7 +555,7 @@ test('interruption during native recovery submission retains cancelled state', a
 });
 
 test('failed connection settles the dependent wait instead of waiting forever', async t => {
-  const { manager, start } = await fixture(t), r = await start();
+  const { manager, host, start } = await fixture(t), r = await start();host.goal=null;
   await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Evaluate' });
   manager.connect = async () => { throw Error('Daemon unavailable'); };
   manager.event(r.id, { event_type: 'process_exit' }); await manager.flush();
@@ -607,18 +626,18 @@ test('acknowledgement during goal verification settles the wait', async t => {
 });
 
 test('expired wake and notification-free observer completion settle waits', async t => {
-  const f = await fixture(t), r = await f.start();
+  const f = await fixture(t), r = await f.start();f.host.goal=null;
   await f.manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect' });
   f.manager.event(r.id, { event_type: 'process_exit' }); Object.values(f.manager.events)[0].expires_at = 0;
   f.manager.expire(); assert.equal(f.manager.wait.state, 'interrupted');
-  const other = await fixture(t), monitor = await other.start();
+  const other = await fixture(t), monitor = await other.start();other.host.goal=null;
   await other.manager.beginWait({ monitor_ids: [monitor.id], resume_instructions: 'Inspect' });
   await other.manager.jobs.get(monitor.id).stop('deadline'); other.manager.expire();
   assert.equal(other.manager.wait.state, 'failed');
 });
 
 test('muted monitors cannot create another wait', async t => {
-  const { manager, start } = await fixture(t), r = await start();
+  const { manager, host, start } = await fixture(t), r = await start();host.goal=null;
   await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect' }); await manager.cancelWait();
   assert.equal((await manager.beginWait({ monitor_ids: [r.id], resume_instructions: 'Inspect' })).state, 'ready');
 });

@@ -142,3 +142,42 @@ test('native repeated manual pause revokes the earlier conditional resume', nati
   assert.equal(Object.keys(f.manager.events).length, 0);
   await f.interrupt(original.turn);
 });
+
+test('native monitor first connection after pause does not restore the goal', native, async t => {
+  const f = await fixture(t), original = await f.startTurn();
+  await f.bridge.rpc('thread/goal/set', { threadId: f.thread, status: 'paused', origin: 'user' });
+  await original.finish();
+  assert.equal((await getGoal(f.bridge, f.thread)).status, 'paused');
+  await f.manager.connect();
+  assert.equal((await getGoal(f.bridge, f.thread)).status, 'paused');
+  f.manager.event(f.monitor.id, { event_type: 'process_exit', returncode: 0 }); await f.manager.flush();
+  assert.equal((await getGoal(f.bridge, f.thread)).status, 'paused');
+  assert.equal(Object.values(f.manager.events)[0].state, 'pending');
+});
+
+test('native quiet authorized wait stays paused after the original turn ends', native, async t => {
+  const f = await fixture(t), original = await f.startTurn(); await f.wait();
+  await f.manager.configureRecovery({enabled:true,authorization:'Fixture: recover failures, never paused goals',retry_interval_ms:1000,check_interval_ms:1000});
+  const resumed=[];
+  f.bridge.on('notification',(method,p)=>{if(method==='thread/goal/updated'&&p.goal.status==='active')resumed.push(p.goal);});
+  await original.finish();
+  // A bounded negative-observation window, not an agent-side polling loop.
+  await new Promise(resolve=>setTimeout(resolve,4000));
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');
+  assert.equal(resumed.length,0);assert.equal(f.requests.length,1);
+  assert.equal(f.manager.wait.state,'waiting');assert.equal(f.manager.recovery.state.attempts,0);
+});
+
+test('native active goal refuses false waiting and can reuse existing conditional authorization', native, async t => {
+  const f = await fixture(t), original = await f.startTurn();
+  const rejected=await f.manager.beginWait({monitor_ids:[f.monitor.id],resume_instructions:'Inspect fixture result'});
+  assert.equal(rejected.state,'goal_pause_required');assert.equal(f.manager.wait,null);
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'active');
+  const accepted=await f.wait();assert.equal(accepted.goal_control,'paused');
+  await original.finish();
+  await new Promise(resolve=>setTimeout(resolve,1500));
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');assert.equal(f.requests.length,1);
+  f.manager.event(f.monitor.id,{event_type:'process_exit',returncode:0});await f.manager.flush();
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'active');assert.equal(f.manager.wait.goal_control,'resumed');
+  await f.interrupt({id:Object.values(f.manager.events)[0].submitted_turn});
+});

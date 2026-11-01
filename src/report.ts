@@ -56,6 +56,7 @@ export function compactReport(report: Json): string {
   if (starting) parts.push(`${starting} starting`);
   if (stopping) parts.push(`${stopping} stopping`);
   if (report.recovery?.enabled) parts.push('auto-retry on');
+  if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused') parts.push('goal waiting for event');
   return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId: string, after: number, waitMs: number, signal?: AbortSignal, root = stateRoot()) {

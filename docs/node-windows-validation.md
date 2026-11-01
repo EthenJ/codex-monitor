@@ -4,7 +4,9 @@ Current candidate: Node plugin v0.2.3 on `develop`. The deployment branch and pa
 
 ## Latest verified run
 
-Windows, Node 24.22.0, Codex 0.166.0: **153 tests, 147 passed, six expected skips, zero failures**. The six skips cover physical NVIDIA access and POSIX-only GPU-provider/permission checks. TypeScript compilation and both skill validators passed. See [v0.2.3 notes](releases/v0.2.3.md) for changes and installation.
+Windows, Node 24.22.0, Codex 0.166.0: **159 tests, 153 passed, six expected skips, zero failures**. The six skips cover physical NVIDIA access and POSIX-only GPU-provider/permission checks. TypeScript compilation and skill validation passed. See [v0.2.3 notes](releases/v0.2.3.md) for changes and installation.
+
+The refreshed v0.2.3 rejects an active-goal wait without applicable pause/resume authorization instead of returning a misleading `waiting` state. Seven real App Server tests now include observer connection after pause, a quiet post-turn wait with recovery enabled, and omitted-authorization correction followed by a real event-driven resume. The quiet-wait assertion uses a bounded notification observation window, with no repeated model or goal polling. The screenshot supplied by the user showed monitor counts and another turn, but no successful pause call; it does not establish that the remote goal had entered `paused`.
 
 The goal investigation reproduced ordinary callbacks bypassing manual pause, unrelated events waking an authorized wait, later selected events escaping cancelled waits, and repeated manual pauses sharing identical second-resolution goal snapshots. Regression tests cover those failures, stale reads, notification/response ordering, equivalent wait reuse and expired history. Four real App Server fixtures validate complete pause/resume and interruption paths against a local synthetic provider. They confirm that pausing a goal leaves its current turn running.
 

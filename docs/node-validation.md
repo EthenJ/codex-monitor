@@ -1,5 +1,9 @@
 # Node plugin validation
 
+## v0.2.3 refreshed goal-wait handoff
+
+Windows with native tests enabled passed **159 tests: 153 passed, six expected skips, zero failures**. Active goals now receive `goal_pause_required` rather than notification-only waiting when pause authorization is omitted; reuse with a subsequently activated goal is also checked. Seven native host tests cover the pause/turn-end/event-resume sequence, including a quiet wait with recovery enabled. Running-monitor counts and confirmed goal waits are reported separately. See [Windows validation](node-windows-validation.md) and the [updated release notes](releases/v0.2.3.md). Prior sections describe the original v0.2.3 build.
+
 ## v0.2.3 goal pause and resume fixes
 
 Windows with Node 24.22.0 and Codex 0.166.0 passed **153 tests: 147 passed, six expected skips, zero failures**. Four isolated native App Server tests cover conditional goal waiting, manual pause/resume, interruption and repeated manual pause. See [Windows validation](node-windows-validation.md) for the reproduced defects, Windows startup/cleanup follow-ups and test command, and [v0.2.3 release notes](releases/v0.2.3.md) for behavior and installation. The user's installed plugin is unchanged by these isolated tests. Earlier sections record historical snapshots.

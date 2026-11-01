@@ -9,6 +9,16 @@ import { fileURLToPath } from 'node:url';
 import { compactReport, summarize, readReport, reportSchema } from '../../codex-monitor/runtime/report.js';
 import { stopReport } from '../../codex-monitor/runtime/stop-report.js';
 import { ensureBroker, ensureService, rpc } from '../../codex-monitor/runtime/service.js';
+
+test('running counts are distinct from a confirmed conditional goal wait',()=>{
+  const snapshot={monitors:[{id:'m',state:'armed'}]};
+  assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running');
+  snapshot.wait={state:'waiting',goal_control:'paused'};
+  assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running · goal waiting for event');
+  snapshot.wait.goal_control='unchanged';
+  assert.equal(compactReport(summarize(snapshot,'live')),'Monitor · 1 running');
+  assert.equal(compactReport(summarize(snapshot,'saved')),'Monitor · live status unavailable');
+});
 import { owned } from '../../codex-monitor/runtime/processes.js';
 
 async function fixture(t) {
