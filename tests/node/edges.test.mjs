@@ -259,17 +259,17 @@ for (const backend of ['native', 'polling']) {
   test(`${backend} ready accepts immediate nested creates, rewrites and replacements`, async t => {
     const { root, cleanups } = await fixture(t);
     // Exercise the first subscription tick, which previously raced a directory rescan.
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < (backend === 'polling' ? 50 : 6); attempt++) {
       const work = path.join(root, String(attempt)), nested = path.join(work, 'nested'), events = [];
       await mkdir(nested, { recursive: true });
       const existing = path.join(work, 'existing.ckpt'), created = path.join(nested, 'new.ckpt');
       await writeFile(existing, 'old');
+      const before = await stat(nested);
       const sensor = startSensor('watchdog', validateOptions('watchdog', {
         cwd: root, watch_directory: work, recursive: true, pattern: '*.ckpt', file_backend: backend,
         poll_ms: 20, timeout_ms: 10000, debounce_ms: 0,
       }, path.join(root, 'state')), event => events.push(event), () => {});
       cleanups.push(() => sensor.stop()); await sensor.ready;
-      const before = await stat(nested);
       await writeFile(created, 'created');
       await writeFile(existing, 'new');
       const after = await stat(nested);
