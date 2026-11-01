@@ -2,7 +2,7 @@
 
 A Node.js Codex plugin for workload events, native goal waiting and bounded session recovery. It watches commands, files, process exit, training inactivity and NVIDIA GPU utilization, then delivers native tool results to the same conversation. Routine progress stays local while the agent continues useful work.
 
-Version **0.2.2** adds interactive installation, typed MCP configuration, preflight validation, compact event results, an optional live status panel and concise reports at turn end. Fixed-interval recovery and optional coverage of unlisted failures from 0.2.1 are preserved.
+Version **0.2.3** fixes callbacks that could bypass a manually paused goal, makes conditional pause/resume respect later user actions, and distinguishes a confirmed goal pause from notification-only waiting. Interactive installation, compact reports and configurable session recovery remain available.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
@@ -36,6 +36,8 @@ For manual installation of a deployment package, run `npm ci --omit=dev`, `npm r
 4. Codex uses `monitor_event` to inspect the trigger and evidence, then supplies a resolution after handling. The same card acknowledges the events and reports current status. Pending results already handled independently are suppressed.
 5. With authorization, the native goal pauses while waiting and resumes after event submission and state verification.
 
+Manual goal pause holds ordinary callbacks locally until resume; event expiry still applies. Only selected events from an explicitly authorized goal wait may wake its paused goal. Pause does not interrupt an already-running turn or tool: the agent must finish its status report and yield. Later user edits and disconnects cancel conditional restoration and require reconciliation. See [goal waiting details](codex-monitor/references/plugin.md#native-goal-waiting).
+
 Tools: `monitor_start`, `monitor_event`, `monitor_display`, `monitor_validate`, `monitor_report`, `monitor_status`, `monitor_stop`, `monitor_wait`, `monitor_cancel_wait`, `monitor_ack`, `monitor_recovery`.
 
 MCP clients discover parameter types, ranges and enums through `tools/list`. `monitor_start` infers command/watchdog mode and applies finite defaults. Commands without `match` report exit only. Start automatically checks configuration and local prerequisites. Use `monitor_validate` to preview normalized settings and verify the exact loaded host thread without starting a workload or recovery. See [minimal examples and validation](codex-monitor/references/plugin.md#typed-configuration-and-preflight).
@@ -64,7 +66,7 @@ Source, tests and build tooling live on the `develop` branch. Run these commands
 
 ```text
 npm test
-npm run package -- dist/codex-monitor-v0.2.2
+npm run package -- dist/codex-monitor-v0.2.3
 ```
 
 Deployment packages include compiled JavaScript, production dependency manifests, plugin metadata and skill instructions. Tests, workflows, TypeScript source, development dependencies, reports, caches and local state are excluded. Deployment pull requests target `main`; development stays on `develop`. The v0.1 tag remains available for the standalone release.
