@@ -15,6 +15,7 @@ export const reportSchema = z.object({
     monitors: z.array(z.record(z.string(), z.unknown())), events: z.array(z.record(z.string(), z.unknown())),
     omitted: z.object({ monitors: z.number(), events: z.number() }),
     wait: z.record(z.string(), z.unknown()).nullable(), recovery: z.record(z.string(), z.unknown()),
+    goal_pause: z.record(z.string(), z.unknown()).optional(),
     warnings: z.array(z.string()),
 });
 const active = new Set(['armed', 'starting', 'stopping']);
@@ -39,9 +40,13 @@ export function summarize(snapshot, source) {
         monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), state: x.state, deadline: x.deadline,
             latest_event: x.latest_event, outcome: x.outcome?.reason,
             ...(active.has(x.state) ? { stop: { tool: 'monitor_stop', monitor_id: x.id } } : {}) })),
-        events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at })),
+        events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, deferred_reason: x.deferred_reason })),
         omitted: { monitors: records.length - selected.length, events: Math.max(0, pending.length - 8) },
-        wait: snapshot.wait ? { state: snapshot.wait.state, monitor_ids: snapshot.wait.monitor_ids } : null,
+        wait: snapshot.wait ? { state: snapshot.wait.state, monitor_ids: snapshot.wait.monitor_ids, goal_control: snapshot.wait.goal_control,
+            pause_owner: snapshot.wait.pause_owner ?? snapshot.goal_pause?.owner,
+            wake_scope: snapshot.wait.wake_scope, guard_ids: snapshot.wait.guard_ids,
+            pause_barrier: snapshot.wait.pause_barrier, pause_checked_at: snapshot.wait.pause_checked_at, error: snapshot.wait.error } : null,
+        goal_pause: snapshot.goal_pause ? { owner: snapshot.goal_pause.owner, checked_at: snapshot.goal_pause.checked_at } : undefined,
         recovery: { enabled: r.enabled, state: r.state, attempts: r.attempts ?? 0, policy: r.policy,
             next_retry_at: r.next_retry_at ?? null, deadline: r.deadline,
             ...(r.enabled ? { stop: { tool: 'monitor_recovery', enabled: false } } : {}) },
@@ -59,6 +64,8 @@ export function compactReport(report) {
         parts.push(`${stopping} stopping`);
     if (report.recovery?.enabled)
         parts.push('auto-retry on');
+    if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused')
+        parts.push(report.wait.pause_barrier === 'ready' ? 'goal waiting for event' : 'goal paused; finishing current turn');
     return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId, after, waitMs, signal, root = stateRoot()) {

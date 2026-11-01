@@ -20,9 +20,11 @@ export class Changes {
                 name: String(m.name || '').slice(0, 100), state: m.state, muted: Boolean(m.muted), outcome: m.outcome?.reason });
         for (const e of Object.values(snapshot.events || {}))
             values.push({ category: 'event', id: e.id,
-                monitor_id: e.monitor_id, event_type: e.event_type, state: e.state, processing: e.processing });
+                monitor_id: e.monitor_id, event_type: e.event_type, state: e.state, processing: e.processing, deferred_reason: e.deferred_reason });
         if (snapshot.wait)
-            values.push({ category: 'wait', id: snapshot.wait.id, state: snapshot.wait.state });
+            values.push({ category: 'wait', id: snapshot.wait.id, state: snapshot.wait.state, goal_control: snapshot.wait.goal_control, pause_barrier: snapshot.wait.pause_barrier });
+        if (snapshot.goal_pause)
+            values.push({ category: 'goal_pause', state: snapshot.goal_pause.owner });
         if (snapshot.recovery) {
             const r = snapshot.recovery;
             values.push({ category: 'recovery', state: r.state,

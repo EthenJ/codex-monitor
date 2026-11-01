@@ -138,11 +138,33 @@ Lifecycle: `pending -> sending -> submitted -> acknowledged`; alternatives inclu
 
 Example authorization: “When only training remains, pause this goal; resume it on completion or a monitoring alert.” Supply the actual instruction in `goal_authorization`. Existing authorization persists; a nonempty string records intent but cannot prove consent.
 
-Original goal viewing/editing/status remain in Codex. The plugin preserves objective, budget and usage, pauses the goal during external waiting, sends a native result, then resumes the same unchanged goal. Without authorization the wait does not suppress native continuation. Release is ANY selected monitor.
+Original goal viewing/editing/status remain in Codex. The plugin preserves objective, budget and usage, pauses the goal during external waiting, sends a native result, then resumes the same unchanged goal. An active goal without `goal_authorization` returns the MCP error `goal_pause_required` / `GOAL_PAUSE_AUTHORIZATION_REQUIRED`, rather than registering a notification-only wait. Reuse the applicable existing user instruction. Notification-only waiting remains available when no goal is active.
 
-Later user edits, cancellation, exhausted budget, lost connection or ambiguous mutation stop restoration. Final accounting from the pausing turn may increase. The API lacks atomic compare-and-set; a user action racing the final verification remains a limitation.
+Before pausing, `monitor_wait` checks **all unhandled events in this exact conversation**, not just the supplied IDs. Submitted, unknown and failed deliveries also require reconciliation. `state: ready` returns event IDs when available; handle them before trying to wait again. It also returns ready when no verified live source exists. Live sources must have finite deadlines and notify on both `monitor_error` and `monitor_expired`; missing fallbacks return the MCP error `guard_required` / `MONITOR_GUARD_REQUIRED` without pausing. Training additionally needs meaningful PID/progress/GPU monitoring; expiry/error delivery is a minimum bounded fallback, not proof of training health. Readiness is checked again after asynchronous goal reads to catch newly arrived events.
 
-If a pending wake is acknowledged or expires, the wait becomes `interrupted` and leaves the goal unchanged. If every selected observer ends without a deliverable event, it becomes `failed`. Muted observers cannot create another wait; inspect their state and explicitly register a new observer when needed. These cases require reconciliation rather than an automatic goal resume.
+Default `wake_scope: "thread"` releases on **ANY monitor in the same conversation**, including newly registered sources. `monitor_ids` is optional, and passing it alone does not narrow the wake scope. For an explicitly narrower policy, set `wake_scope: "selected"` and supply a nonempty ID list. Only the exact caller thread is included. Routine training progress must stay quiet across all sources (`watchdog_only: true`); a file change or output match that is subscribed for notification releases an ANY-event wait.
+
+```json
+{
+  "thread_id": "<exact caller CODEX_THREAD_ID>",
+  "resume_instructions": "Inspect the triggering event, reconcile its effects and continue the goal.",
+  "goal_authorization": "<existing user instruction to pause while waiting and resume on any monitor event>"
+}
+```
+
+The tool blocks until the pause RPC, matching native goal notification and unchanged paused-goal read are confirmed. Verify `state: waiting` and `goal_control: paused` before yielding. It records `pause_barrier: draining` while the calling turn is active. Native goal pause does not interrupt that turn or its tools: finish the status report and end the turn promptly. Waiting synchronously inside that turn for its own completion would deadlock.
+
+Early monitor events remain pending until native lifecycle notifications and a host read establish idle (`pause_barrier: ready`) with the same goal still paused. Only then may the service submit the wake and restore the goal. There is no model polling or recurring dispatch timer during this barrier. A quiet wait does not submit a new turn. Live reports distinguish `goal paused; finishing current turn` from `goal waiting for event`. A plain running count never establishes goal pause.
+
+The wait result distinguishes `goal_control: paused`, `unchanged`, `resumed` and `unverified`. These record the operation's control result, not perpetual verification of the native goal. Equivalent scope, requested IDs, instructions and authorization reuse the active wait but still check unresolved events. Expired historical events do not block a new wait. `guard_ids` records verified fallback sources at registration; a monitor may naturally stop after producing an event.
+
+Pause ownership is tracked separately from the wait record. `pause_owner: plugin` comes from a confirmed plugin pause and a matching native goal; ordinary usage accounting preserves it. Follow-up messages do not revoke it. A subsequent `monitor_wait` can update the live wait in place, or explicitly rearm a cancelled/replaced dependency, reusing the unchanged plugin pause without first activating it. The applicable conditional authorization is retained privately while ownership is verified. Cancelling a wait still mutes its notifications and never resumes the goal; rearming is a separate explicit operation.
+
+A new explicit goal action (including an identical same-second manual pause), user interruption, disconnect or service restart revokes ownership. `pause_owner: external` means an observed goal action outside this plugin, which may be the user or another client; `unknown` means ownership could not be established. The native paused status alone is never adopted. `state: goal_paused`, `goal_control: unchanged` is a normal readable refusal to take over an external/unverified pause, not a failed pause attempt. Resume the goal explicitly before requesting automatic waiting in that case. Ended/absent/exhausted goals return `goal_unavailable` / `GOAL_UNAVAILABLE`. Reports expose only ownership metadata, not the retained goal snapshot or authorization. Ownership is not restored from saved state after restart.
+
+Manual goal pause holds ordinary callbacks locally until native resume; expiry still applies. A later manual pause, goal edit, user interruption, disconnect or ambiguous native state cancels conditional restoration. Cancelled/disconnected waits mute their wake sources, so later events cannot fall through into ordinary callbacks. Sources outside an explicitly selected scope retain their independent policy. Inspect and explicitly rearm when appropriate. A submitted callback cannot be recalled, and pause/submit/resume are separate host operations rather than an atomic transaction.
+
+If a pending wake is acknowledged or expires, the wait becomes `interrupted` and leaves the goal unchanged. If every wait observer ends without a deliverable event, it becomes `failed`. Muted observers cannot create another wait. These outcomes require reconciliation rather than automatic goal resume.
 
 ## Session recovery
 

@@ -82,7 +82,7 @@ export function renderSummary(tool, data, isError = false, mode = 'compact', vie
         if (r.summary.unhandled_events > 3)
             lines.push(`  +${r.summary.unhandled_events - 3} more events to review`);
         if (r.wait && ['preparing', 'waiting', 'waking'].includes(r.wait.state))
-            lines.push(`  Goal wait · ${label(r.wait.state)}`);
+            lines.push(`  Goal wait · ${label(r.wait.state)} · goal ${label(r.wait.goal_control || 'unverified')}`);
         return lines.join('\n');
     }
     if (tool === 'monitor_recovery') {
@@ -96,8 +96,10 @@ export function renderSummary(tool, data, isError = false, mode = 'compact', vie
     }
     if (tool === 'monitor_cancel_wait')
         return 'Monitor · wait cancelled · goal unchanged';
+    if (tool === 'monitor_wait' && data.state === 'goal_paused')
+        return `Monitor · goal remains paused · ${data.pause_owner === 'external' ? 'manual or external pause' : 'pause ownership unverified'}`;
     if (tool === 'monitor_wait')
-        return `Monitor · wait ${state(data.state)}${data.reason ? ` · ${label(data.reason)}` : ''}`;
+        return `Monitor · wait ${state(data.state)}${data.goal_control ? ` · goal ${label(data.goal_control)}` : ''}${data.goal_control === 'unchanged' ? ' (active goals may continue)' : ''}${data.pause_barrier === 'draining' ? ' · finish this turn; wake held until idle' : ''}${data.reason || data.error ? ` · ${label(data.reason || data.error)}` : ''}`;
     const lines = [`Monitor · ${label(data.name || data.id || tool)} · ${state(data.state)}`];
     if (mode === 'verbose' && tool === 'monitor_start' && data.deadline != null)
         lines.push(`  Until ${at(data.deadline)}`);
