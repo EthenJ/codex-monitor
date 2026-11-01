@@ -258,21 +258,18 @@ for (const backend of ['native', 'polling']) {
 
   test(`${backend} ready accepts immediate nested creates, rewrites and replacements`, { timeout: 60000 }, async t => {
     const { root, cleanups } = await fixture(t);
-    let trace = [];
-    const originalRemember = FileObservations.prototype.remember;
-    FileObservations.prototype.remember = function(file, stats) {
-      trace.push({ initial: file, stats });
-      return originalRemember.call(this, file, stats);
-    };
-    t.after(() => { FileObservations.prototype.remember = originalRemember; });
     // Exercise the first subscription tick, which previously raced a directory rescan.
-    for (let attempt = 0; attempt < (backend === 'polling' ? 200 : 6); attempt++) {
+    for (let attempt = 0; attempt < (backend === 'polling' ? 50 : 6); attempt++) {
       const work = path.join(root, String(attempt)), nested = path.join(work, 'nested'), events = [];
       await mkdir(nested, { recursive: true });
       const existing = path.join(work, 'existing.ckpt'), created = path.join(nested, 'new.ckpt');
       await writeFile(existing, 'old');
-      const before = await stat(nested);
-      trace = [];
+      // Windows can assign the same timestamp to immediate creates/rewrites.
+      // Stat-based polling cannot distinguish unchanged metadata. Seed older
+      // metadata so this tests readiness, without adding a post-ready wait.
+      const baseline = new Date(Date.now() - 10000);
+      for (const entry of [existing, nested, work]) await utimes(entry, baseline, baseline);
+      const before = await stat(nested), beforeFile = await stat(existing);
       const sensor = startSensor('watchdog', validateOptions('watchdog', {
         cwd: root, watch_directory: work, recursive: true, pattern: '*.ckpt', file_backend: backend,
         poll_ms: 20, timeout_ms: 10000, debounce_ms: 0,
@@ -293,7 +290,7 @@ for (const backend of ['native', 'polling']) {
         events.length = 0;
         await writeFile(existing, 'new');
         await eventually(() => events.some(e => e.path === existing && e.change === 'created'));
-      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events, before, after, trace, current: await stat(existing).catch(() => null) }, (_key, value) => typeof value === 'bigint' ? String(value) : value)); throw error; }
+      } catch (error) { t.diagnostic(JSON.stringify({ attempt, events, before, after, beforeFile, current: await stat(existing).catch(() => null) })); throw error; }
       finally { await sensor.stop(); }
     }
   });

@@ -74,6 +74,7 @@ export async function validateRequest(threadId: string, directory: string, reque
       parseGpu(await capture(o.nvidia_smi || 'nvidia-smi', ['--query-gpu=index,uuid,pci.bus_id,utilization.gpu', '--format=csv,noheader,nounits'], {}, 5000), o.gpu_id);
     });
     if (normalized.kind === 'command') result.warnings.push('The workload command is not executed during validation; executable availability and its eventual exit status are not verified.');
+    if ((o.watch_file || o.watch_directory) && o.file_backend === 'polling') result.warnings.push('Polling samples filesystem metadata, not every write. Same-size writes with unchanged modification time, directory changes with unchanged metadata, and changes entirely between samples may be missed.');
     result.warnings.push('Validation does not arm observers. Files, PIDs, GPU access and watcher readiness can change before registration.');
   }
   if (checkHost && normalized) await check('host', 'thread_id', async () => {

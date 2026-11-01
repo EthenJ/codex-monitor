@@ -96,6 +96,8 @@ File options: `watch_file` or `watch_directory`, `recursive`, `pattern`, `file_b
 
 `cwd` must be a directory; an existing `watch_file` must be a regular file. File identity, size and timestamps are reconciled against the initial scan and previous observations, so unchanged startup/backend echoes do not create events or reset inactivity. Every observed file-version change resets inactivity even if its notification is debounced. Deletion and directory churn do not establish progress. This uses filesystem metadata rather than content hashing.
 
+Polling samples metadata rather than recording every write. Same-size writes with unchanged modification time, directory changes whose metadata is unchanged, and transient changes between samples may be missed. Immediate writes can share a timestamp on Windows. Prefer the default native backend for local files; for polling, use progress signals that reliably change observable metadata (for example, append to a log). Preflight reports this limitation as a warning, not an invalid configuration.
+
 GPU options: `gpu_id` (indices, UUIDs, PCI IDs, or `all`), `gpu_match` (`all`/`any`), `gpu_util_below`, `gpu_recover_above`, `gpu_below_for_ms`, `gpu_sample_ms`, `nvidia_smi`. Invalid/missing samples are unknown, never zero; they reset dwell evidence. In `any` mode the same card must remain low. `dead_if` combines file/GPU rules. Recovery events require `report_recovery: true` and `watchdog_recovered` in `notify_on`.
 
 PID identity uses a Windows handle, Linux `/proc` start time, or macOS process start-time checks. POSIX checks are local, not model turns. A watchdog never signals the observed PID. macOS unrelated-process exit codes are unavailable and start-time resolution limits PID-reuse detection.

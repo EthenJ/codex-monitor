@@ -37,6 +37,9 @@ test('minimal monitor configuration infers kind, preserves paths and shares effe
   assert.equal(new RegExp(normalized.options.match).test('anything'), false);
   assert.deepEqual(normalizeMonitor(normalized, f.directory), normalized);
   assert.deepEqual(normalizeMonitor(report.normalized, f.directory), report.normalized);
+  const polling = await f.validate({ ...f.config, options: { ...f.config.options, file_backend: 'polling' } });
+  assert.equal(polling.valid, true);
+  assert.match(polling.warnings.join(' '), /Polling samples filesystem metadata/);
 });
 test('invalid fields, mutually exclusive sources and impossible health rules are rejected', async t => {
   const f = await fixture(t);
