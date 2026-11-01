@@ -1,4 +1,10 @@
-# Node v0.3 preview validation
+# Node plugin validation
+
+## v0.2.2 candidate
+
+Typed MCP schemas, read-only preflight validation, `monitor_report` and informational Stop/Interrupt hooks are implemented on `develop`. The current Windows suite has **104 tests: 98 passed and six expected platform/hardware skips**. Real Codex tests use isolated homes and a local synthetic provider; user configuration and hook trust remain unchanged. A deterministic regression verifies the fix for a startup lock released during concurrent service registration. Extended file-observation diagnostics captured Windows directory changes with identical timestamps; preflight and documentation now state the limits of stat-based polling, and readiness fixtures use distinguishable initial metadata without waiting after readiness.
+
+See [v0.2.2 release notes](releases/v0.2.2.md) for final CI, isolated installation evidence, hook rendering/trust requirements and remaining platform limitations. Main, published tags and the live v0.2.1 installation are unchanged during candidate validation.
 
 ## Public v0.2.1 recovery update
 
