@@ -4,6 +4,8 @@
 
 Windows with native tests enabled passed **159 tests: 153 passed, six expected skips, zero failures**. Active goals now receive `goal_pause_required` rather than notification-only waiting when pause authorization is omitted; reuse with a subsequently activated goal is also checked. Seven native host tests cover the pause/turn-end/event-resume sequence, including a quiet wait with recovery enabled. Running-monitor counts and confirmed goal waits are reported separately. See [Windows validation](node-windows-validation.md) and the [updated release notes](releases/v0.2.3.md). Prior sections describe the original v0.2.3 build.
 
+[Refresh CI at `066d37f`](https://github.com/EthenJ/codex-monitor/actions/runs/41290862442) passed all **18 jobs**. The refresh retains version 0.2.3 at the maintainer's request; previous tag history, release metadata and assets were backed up before replacement. Deployment remains 38 files with no source, tests or workflows.
+
 ## v0.2.3 goal pause and resume fixes
 
 Windows with Node 24.22.0 and Codex 0.166.0 passed **153 tests: 147 passed, six expected skips, zero failures**. Four isolated native App Server tests cover conditional goal waiting, manual pause/resume, interruption and repeated manual pause. See [Windows validation](node-windows-validation.md) for the reproduced defects, Windows startup/cleanup follow-ups and test command, and [v0.2.3 release notes](releases/v0.2.3.md) for behavior and installation. The user's installed plugin is unchanged by these isolated tests. Earlier sections record historical snapshots.
