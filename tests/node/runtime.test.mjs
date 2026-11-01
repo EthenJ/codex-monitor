@@ -270,7 +270,123 @@ test('equivalent wait registration reuses the wait without another pause', async
   const params={monitor_ids:[m.id],resume_instructions:'Inspect',goal_authorization:'Pause and resume'};
   const first=await manager.beginWait(params), second=await manager.beginWait(params);
   assert.equal(second.id,first.id);assert.equal(second.goal_control,'paused');assert.equal(host.changes.length,1);
-  await assert.rejects(manager.beginWait({...params,resume_instructions:'Different action'}),/already active/);
+  const updated=await manager.beginWait({...params,resume_instructions:'Different action'});
+  assert.equal(updated.id,first.id);assert.equal(updated.instructions,'Different action');assert.equal(host.changes.length,1);
+});
+
+test('a follow-up message refreshes a plugin-owned wait without a second pause or premature resume',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'};
+  const first=await manager.beginWait(params);assert.equal(first.pause_owner,'plugin');
+  host.status='active';host.turn={id:'follow-up',status:'inProgress'};
+  host.emit('notification','turn/started',{threadId:host.thread,turn:structuredClone(host.turn)});
+  const updated=await manager.beginWait({resume_instructions:'Follow the new user message after completion'});
+  assert.equal(updated.id,first.id);assert.equal(updated.goal_control,'paused');assert.equal(updated.pause_owner,'plugin');
+  assert.equal(updated.instructions,'Follow the new user message after completion');assert.equal(updated.pause_barrier,'draining');
+  assert.equal(host.changes.length,1);
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();assert.equal(host.submissions.length,0);
+  host.status='idle';host.turn.status='completed';host.emit('notification','turn/completed',{threadId:host.thread,turn:structuredClone(host.turn)});
+  await eventually(()=>manager.wait.state==='delivered');assert.equal(host.goal.status,'active');assert.equal(host.changes.length,2);
+  assert.equal(manager.snapshot().goal_pause.owner,'none');
+});
+
+test('explicit rearming after cancellation reuses the unchanged plugin pause',async t=>{
+  const {manager,host,start,work}=await fixture(t);await start();
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause while waiting; resume on any monitor'};
+  await manager.beginWait(params);await manager.cancelWait();
+  assert.equal(manager.snapshot().goal_pause.owner,'plugin');
+  const m=await manager.start({name:'replacement',options:{cwd:work,watch_file:'replacement',timeout_ms:10000},instructions:'Inspect replacement'});
+  const result=await manager.beginWait({resume_instructions:'Inspect new dependency'});
+  assert.equal(result.state,'waiting');assert.equal(result.goal_control,'paused');assert.equal(host.changes.length,1);
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();assert.equal(host.goal.status,'active');
+});
+
+test('ordinary goal accounting during follow-up preserves plugin pause ownership',async t=>{
+  const {manager,host,start}=await fixture(t);await start();
+  await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  host.goal.tokensUsed+=10;host.goal.timeUsedSeconds+=2;host.goal.updatedAt++;
+  host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:'follow-up',goal:structuredClone(host.goal)});
+  const result=await manager.beginWait({resume_instructions:'Updated callback'});
+  assert.equal(result.goal_control,'paused');assert.equal(result.pause_owner,'plugin');assert.equal(host.changes.length,1);
+});
+
+test('manual pause revokes plugin ownership even after its wait was cancelled',async t=>{
+  const {manager,host,start,work}=await fixture(t);await start();
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause and resume'};
+  await manager.beginWait(params);await manager.cancelWait();
+  // Same-second, identical pause fields still constitute a new explicit action.
+  host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});
+  assert.equal(manager.snapshot().goal_pause.owner,'external');
+  const m=await manager.start({name:'later',options:{cwd:work,watch_file:'later',timeout_ms:10000},instructions:'Inspect'});
+  const result=await manager.beginWait(params);
+  assert.equal(result.state,'goal_paused');assert.equal(result.goal_control,'unchanged');assert.equal(result.pause_owner,'external');
+  assert.equal(host.changes.length,1);assert.equal(manager.records[m.id].muted,undefined);
+  manager.event(m.id,{event_type:'process_exit'});await manager.flush();assert.equal(host.submissions.length,0);assert.equal(host.goal.status,'paused');
+});
+
+test('a pre-existing manual pause returns a readable result without automatic takeover',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();host.goal.status='paused';
+  const result=await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Previously authorized pause and resume'});
+  assert.equal(result.state,'goal_paused');assert.equal(result.goal_control,'unchanged');assert.equal(result.pause_owner,'unknown');
+  assert.equal(host.changes.length,0);assert.equal(manager.records[m.id].muted,undefined);
+});
+
+test('manual interruption revokes the pause lease before explicit rearming',async t=>{
+  const {manager,host,start,work}=await fixture(t);await start();
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause and resume'};await manager.beginWait(params);
+  host.emit('notification','turn/completed',{threadId:host.thread,turn:{id:'follow-up',status:'interrupted'}});
+  await manager.start({name:'later',options:{cwd:work,watch_file:'later',timeout_ms:10000},instructions:'Inspect'});
+  assert.equal((await manager.beginWait(params)).state,'goal_paused');assert.equal(host.changes.length,1);
+});
+
+test('a saved plugin pause cannot be adopted after service restart',async t=>{
+  const {manager,host,start,work}=await fixture(t);await start();
+  const params={resume_instructions:'Inspect',goal_authorization:'Pause and resume'};await manager.beginWait(params);
+  await manager.close();
+  const restored=new Manager(manager.directory,manager.threadId,{connect:async()=>host});
+  try {
+    await restored.start({name:'later',options:{cwd:work,watch_file:'later',timeout_ms:10000},instructions:'Inspect'});
+    const result=await restored.beginWait(params);assert.equal(result.state,'goal_paused');assert.equal(result.pause_owner,'unknown');
+    assert.equal(host.changes.length,1);
+  } finally { await restored.close(); }
+});
+
+test('a manually paused goal overtaking rearm cannot be relabeled as plugin-owned',async t=>{
+  const {manager,host,start}=await fixture(t);await start();
+  await manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause and resume'});
+  const rpc=host.rpc.bind(host);let changed=false;
+  host.rpc=async(method,params)=>{const result=await rpc(method,params);if(method==='thread/goal/get'&&!changed){changed=true;host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});}return result;};
+  const result=await manager.beginWait({resume_instructions:'Updated callback'});
+  assert.equal(result.state,'cancelled');assert.equal(result.pause_owner,'external');assert.equal(host.changes.length,1);
+});
+
+test('a same-second explicit pause during initial confirmation defeats ownership acquisition',async t=>{
+  const {manager,host,start}=await fixture(t);await start();const rpc=host.rpc.bind(host);let changed=false;
+  host.rpc=async(method,params)=>{const result=await rpc(method,params);if(method==='thread/goal/set'&&!changed){changed=true;host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});}return result;};
+  await assert.rejects(manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause and resume'}),/pause not confirmed/);
+  assert.notEqual(manager.snapshot().goal_pause.owner,'plugin');assert.equal(host.goal.status,'paused');assert.equal(host.submissions.length,0);
+});
+
+test('a delayed own pause acknowledgement cannot reacquire ownership after manual interruption',async t=>{
+  const {manager,host,start}=await fixture(t);await start();const reached=gate(),release=gate(),rpc=host.rpc.bind(host);
+  host.rpc=async(method,params)=>{
+    if(method!=='thread/goal/set')return rpc(method,params);
+    host.goal.status='paused';host.goal.updatedAt++;const goal=structuredClone(host.goal);reached.release();
+    void release.promise.then(()=>host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal}));
+    return {goal};
+  };
+  const waiting=manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Pause and resume'});await reached.promise;
+  host.emit('notification','turn/completed',{threadId:host.thread,turn:{id:'original',status:'interrupted'}});release.release();
+  assert.equal((await waiting).state,'cancelled');assert.notEqual(manager.snapshot().goal_pause.owner,'plugin');
+  assert.equal(host.submissions.length,0);
+});
+
+test('budget exhaustion cannot reuse an earlier plugin-owned pause',async t=>{
+  const {manager,host,start}=await fixture(t);await start();const params={resume_instructions:'Inspect',goal_authorization:'Pause and resume'};
+  await manager.beginWait(params);await manager.cancelWait();
+  await manager.start({name:'new-source',options:{cwd:manager.records[Object.keys(manager.records)[0]].options.cwd,watch_file:'other',timeout_ms:10000},instructions:'Inspect'});host.goal.tokensUsed=host.goal.tokenBudget;
+  const result=await manager.beginWait(params);assert.equal(result.state,'goal_unavailable');assert.equal(result.error.code,'GOAL_UNAVAILABLE');
+  assert.equal(host.changes.length,1);assert.notEqual(manager.snapshot().goal_pause.owner,'plugin');
 });
 
 test('reusing a wait rechecks unresolved events instead of declaring a clean handoff',async t=>{

@@ -21,6 +21,7 @@ export class Changes {
     for (const e of Object.values(snapshot.events || {}) as Json[]) values.push({ category: 'event', id: e.id,
       monitor_id: e.monitor_id, event_type: e.event_type, state: e.state, processing: e.processing, deferred_reason: e.deferred_reason });
     if (snapshot.wait) values.push({ category: 'wait', id: snapshot.wait.id, state: snapshot.wait.state, goal_control: snapshot.wait.goal_control, pause_barrier: snapshot.wait.pause_barrier });
+    if (snapshot.goal_pause) values.push({ category: 'goal_pause', state: snapshot.goal_pause.owner });
     if (snapshot.recovery) { const r = snapshot.recovery; values.push({ category: 'recovery', state: r.state,
       enabled: r.enabled, attempts: r.attempts, next_retry_at: r.next_retry_at, policy: r.policy }); }
     return new Map(values.map(v => [`${v.category}:${v.id || ''}`, JSON.stringify(v)]));

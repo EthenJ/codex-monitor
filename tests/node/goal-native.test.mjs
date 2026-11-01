@@ -73,12 +73,12 @@ async function fixture(t) {
   manager = new Manager(path.join(root, 'state'), thread, { connect: async () => bridge });
   const monitor = await manager.start({ name: 'fixture', options: { cwd: root, watch_file: 'done', timeout_ms: 20000 }, instructions: 'Inspect fixture event' });
   return { bridge, manager, monitor, thread, requests,
-    async startTurn() {
+    async startTurn(activateGoal = true) {
       const ready = new Promise(resolve => { nextRequest = resolve; });
       const { turn } = await bridge.rpc('turn/start', { threadId: thread, input: [{ type: 'text', text: 'Local fixture.' }] });
       const request = await ready;
       assert.equal(request.turnId, turn.id);
-      await bridge.rpc('thread/goal/set', { threadId: thread, status: 'active', origin: 'user' });
+      if (activateGoal) await bridge.rpc('thread/goal/set', { threadId: thread, status: 'active', origin: 'user' });
       return { turn, async finish() {
         const done = notice(bridge, 'turn/completed', p => p.turn.id === turn.id, `after provider completion for ${turn.id}`);
         request.finish();
@@ -207,4 +207,32 @@ test('native thread wait holds another monitor event until the calling turn actu
   const event=Object.values(f.manager.events)[0];assert.equal(event.state,'submitted');
   assert.notEqual(event.submitted_turn,original.turn.id);
   await f.interrupt({id:event.submitted_turn});
+});
+
+test('native follow-up message can refresh an automatically paused wait and wake after the new turn ends',native,async t=>{
+  const f=await fixture(t),original=await f.startTurn();await f.wait();await original.finish();
+  await changed(f.manager,()=>f.manager.wait.pause_barrier==='ready');
+  const followup=await f.startTurn(false);
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');
+  const result=await f.manager.beginWait({resume_instructions:'Apply the follow-up after inspecting the event'});
+  assert.equal(result.state,'waiting');assert.equal(result.goal_control,'paused');assert.equal(result.pause_owner,'plugin');
+  assert.equal(result.pause_barrier,'draining');
+  f.manager.event(f.monitor.id,{event_type:'process_exit',returncode:0});await f.manager.flush();
+  assert.equal(Object.values(f.manager.events)[0].state,'pending');assert.equal(f.requests.length,2);
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');
+  await followup.finish();await changed(f.manager,()=>f.manager.wait.state==='delivered');
+  assert.equal((await getGoal(f.bridge,f.thread)).status,'active');
+  await f.interrupt({id:Object.values(f.manager.events)[0].submitted_turn});
+});
+
+test('native manual re-pause after cancelling a plugin wait cannot be adopted by a later message',native,async t=>{
+  const f=await fixture(t),original=await f.startTurn();await f.wait();await f.manager.cancelWait();
+  const paused=notice(f.bridge,'thread/goal/updated',p=>p.goal.status==='paused');
+  await f.bridge.rpc('thread/goal/set',{threadId:f.thread,status:'paused',origin:'user'});await paused;
+  const monitor=await f.manager.start({name:'replacement',options:{cwd:path.dirname(f.manager.directory),watch_file:'replacement',timeout_ms:20000},instructions:'Inspect'});
+  const result=await f.manager.beginWait({resume_instructions:'Inspect',goal_authorization:'Earlier conditional pause and resume instruction'});
+  assert.equal(result.state,'goal_paused');assert.equal(result.pause_owner,'external');assert.equal(result.goal_control,'unchanged');
+  f.manager.event(monitor.id,{event_type:'process_exit'});await f.manager.flush();
+  assert.equal(Object.values(f.manager.events)[0].state,'pending');assert.equal(f.requests.length,1);
+  await original.finish();assert.equal((await getGoal(f.bridge,f.thread)).status,'paused');
 });

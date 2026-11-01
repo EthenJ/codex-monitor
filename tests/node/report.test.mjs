@@ -31,12 +31,14 @@ test('report has bounded structured fields and omits instructions, evidence and 
   const snapshot = { thread_id: randomUUID(), monitors: Array.from({ length: 100 }, (_, i) => ({ id: String(i), name: 'test', state: i === 99 ? 'armed' : 'stopped', instructions: 'SECRET' })),
     events: Array.from({ length: 20 }, (_, i) => ({ id: String(i), state: 'submitted', event_type: 'file_change', evidence: 'SECRET' })),
     wait: { state: 'waiting', authorization: 'SECRET', instructions: 'SECRET' },
+    goal_pause: { owner: 'plugin', authorization: 'SECRET', goal: { objective: 'SECRET' } },
     recovery: { enabled: true, state: 'observing', authorization: 'SECRET', policy: { retry_interval_ms: 300000 } } };
   const r = summarize(snapshot, 'live'); reportSchema.parse(r);
   assert.equal(r.monitors.length, 32); assert.equal(r.monitors[0].id, '99');
   assert.equal(r.summary.active, 1); assert.equal(r.summary.unhandled_events, 20);
   assert.equal(r.events.length, 8); assert.equal(r.omitted.events, 12);
   assert.ok(!JSON.stringify(r).includes('SECRET')); assert.equal(r.recovery.stop.enabled, false);
+  assert.equal(r.goal_pause.owner,'plugin');assert.equal(r.wait.pause_owner,'plugin');
 });
 test('report with no service never creates state, hooks never block or continue a turn', async t => {
   const f = await fixture(t);

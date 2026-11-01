@@ -17,7 +17,7 @@ import { rpc, ensureBroker } from '../../codex-monitor/runtime/service.js';
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'monitor-validation-'));
   const work = path.join(root, 'work'); await mkdir(work);
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
   const thread = randomUUID(), directory = path.join(root, 'state', thread);
   const config = { name: 'fixture', instructions: 'Inspect evidence', options: { cwd: work, watch_file: 'metrics' } };
   const validate = (value = config, host = false, connect) => validateRequest(thread, directory, { operation: 'start', config: value }, host, connect);

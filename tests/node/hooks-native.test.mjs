@@ -22,7 +22,7 @@ for (const surface of ['exec', 'app-server']) test(surface === 'exec' ? 'real tr
     for (const e of events) res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`); res.end();
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); });
   await writeFile(path.join(root, 'config.toml'), `model_provider="fixture"\nmodel="fixture"\n[model_providers.fixture]\nname="Offline hook fixture"\nbase_url="http://127.0.0.1:${server.address().port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n`);
   const plugin = path.join(root, 'plugin with spaces');
   await mkdir(path.join(plugin, 'codex-monitor/runtime'), { recursive: true });

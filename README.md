@@ -4,7 +4,7 @@ A Node.js Codex plugin for workload events, native goal waiting and bounded sess
 
 Version **0.2.3** fixes callbacks that could bypass a manually paused goal, makes conditional pause/resume respect later user actions, and distinguishes a confirmed goal pause from notification-only waiting. Interactive installation, compact reports and configurable session recovery remain available.
 
-The refreshed v0.2.3 also refuses a false waiting handoff while a goal is still active: `monitor_wait` requires the applicable pause/resume authorization and confirms the native pause before the agent yields. It checks all unhandled events and live fallback guards before pausing. Early events remain queued until the current turn ends and the host is verified idle; any monitor in the same conversation can then resume the goal. A running-monitor count alone never means the goal is paused. Reinstall if you installed the earlier v0.2.3 package.
+The refreshed v0.2.3 also refuses a false waiting handoff while a goal is still active: `monitor_wait` requires the applicable pause/resume authorization and confirms the native pause before the agent yields. It checks all unhandled events and live fallback guards before pausing. Early events remain queued until the current turn ends and the host is verified idle; any monitor in the same conversation can then resume the goal. Follow-up messages can refresh a verified plugin-owned wait without a second pause; manual or unverified pauses remain paused. A running-monitor count alone never means the goal is paused. Reinstall if you installed the earlier v0.2.3 package.
 
 Original goal inspection, editing, budgets and status remain in Codex. No Codex source build or model API key is required.
 
