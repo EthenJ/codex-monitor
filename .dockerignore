@@ -4,6 +4,8 @@
 !tsconfig.json
 !src/
 !src/**
+!hooks/
+!hooks/**
 !tests/
 !tests/node/
 !tests/node/**
