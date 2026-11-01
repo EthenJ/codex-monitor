@@ -1,5 +1,9 @@
 export const widgetUri = 'ui://codex-monitor/status-v022.html';
-export const widgetMeta = { ui: { resourceUri: widgetUri } };
+export const widgetMeta = {
+  ui: { resourceUri: widgetUri },
+  // Codex 0.166 records mcpAppUi only with an explicit display preference.
+  'openai/ui': { preferredModelDisplayMode: 'inline' },
+};
 // Self-contained MCP Apps view. No CDN, external fetch, workload HTML or model messages.
 export const widgetHtml = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

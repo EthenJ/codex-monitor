@@ -56,6 +56,7 @@ test('MCP tools serve the UI and long wait sees mutations without starting a mod
   try {
     await client.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('codex-monitor/runtime/server.js')],env:{...process.env,CODEX_MONITOR_HOME:state}}));
     const tools=(await client.listTools()).tools;assert.equal(tools.length,9);assert.ok(tools.every(x=>x._meta.ui.resourceUri===widgetUri&&x.title));
+    assert.ok(tools.every(x=>x._meta['openai/ui'].preferredModelDisplayMode==='inline'));
     assert.equal((await client.readResource({uri:widgetUri})).contents[0].text,widgetHtml);
     const call=(name,args={})=>client.callTool({name,arguments:{thread_id:thread,...args}});
     const empty=await call('monitor_report');assert.equal(empty.structuredContent.source,'empty');assert.equal(empty.structuredContent.live_updates,false);
