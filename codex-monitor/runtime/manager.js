@@ -328,13 +328,28 @@ export class Manager {
             this.expire();
             if (this.wait && WAITING.has(this.wait.state)) {
                 if (JSON.stringify([...this.wait.monitor_ids].sort()) === JSON.stringify(selected) &&
-                    this.wait.instructions === instructions && this.wait.authorization === authorization)
+                    this.wait.instructions === instructions && this.wait.authorization === authorization) {
+                    if (!authorization) {
+                        const required = await this.requireGoalPause();
+                        if (required) {
+                            this.wait.state = 'interrupted';
+                            this.wait.error = required.error.message;
+                            this.save();
+                            return required;
+                        }
+                    }
                     return this.snapshot().wait;
+                }
                 throw Error('A wait is already active');
             }
             for (const key of selected)
                 if (!Object.hasOwn(this.records, key) || this.records[key].muted || this.records[key].state !== 'armed' || Object.values(this.events).some(e => e.monitor_id === key && !['acknowledged', 'expired', 'superseded', 'suppressed'].includes(e.state)))
                     return { state: 'ready', reason: 'Inspect events and notification availability before waiting' };
+            if (!authorization) {
+                const required = await this.requireGoalPause();
+                if (required)
+                    return required;
+            }
             const waiting = { id: id(), state: 'preparing', monitor_ids: selected, instructions, authorization, goal: null, goal_control: 'unchanged' };
             this.wait = waiting;
             this.save();
@@ -372,6 +387,13 @@ export class Manager {
             this.requestFlush();
             return this.snapshot().wait;
         });
+    }
+    async requireGoalPause() {
+        const bridge = await this.connect();
+        await loaded(bridge, this.threadId);
+        const goal = await this.currentGoal(bridge);
+        return goal?.status === 'active' ? { state: 'goal_pause_required', goal_control: 'unchanged',
+            error: { code: 'GOAL_PAUSE_AUTHORIZATION_REQUIRED', message: 'Goal is still active. Reuse the user\'s existing instruction to pause while waiting and resume on an event as goal_authorization, then call monitor_wait again. If no such instruction exists, ask once. No new wait was registered; do not report the goal as paused or start a polling loop.' } } : null;
     }
     async cancelWait() {
         if (this.wait) {

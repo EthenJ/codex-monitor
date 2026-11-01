@@ -10,7 +10,7 @@ import { readReport, waitReport, reportSchema } from './report.js';
 import { toolResult, toolTitles } from './presentation.js';
 import { widgetHtml, widgetMeta, widgetUri } from './widget.js';
 import { displayModeSchema, displaySettings } from './display.js';
-const server = new McpServer({ name: 'codex-monitor', version: VERSION }, { instructions: 'Monitor long tests/training and continue other work. Compact display is default: use monitor_event to inspect native callback IDs and show a trigger card; after handling use its resolution to acknowledge and report together. Reuse a fresh returned report before yielding; avoid redundant status/ack/report calls and stop calls for already stopped observers. monitor_display selects compact or verbose per thread. Never repeat stale events or enable goal control/recovery without applicable user authorization.' });
+const server = new McpServer({ name: 'codex-monitor', version: VERSION }, { instructions: 'Monitor long tests/training and continue other work. When an active goal has only monitored external work left, call monitor_wait with the user\'s existing conditional pause/resume authorization and verify state: waiting plus goal_control: paused before yielding. Starting monitors, writing a final answer and reporting running counts do not pause goals. Never silently fall back to notification-only waiting for an active goal. Compact display is default: use monitor_event to inspect native callback IDs and show a trigger card; after handling use its resolution to acknowledge and report together. Reuse a fresh returned report before yielding; avoid redundant status/ack/report calls and stop calls for already stopped observers. monitor_display selects compact or verbose per thread. Never repeat stale events or enable goal control/recovery without applicable user authorization.' });
 const thread = z.string().uuid().describe('Exact current caller CODEX_THREAD_ID, never the MCP server environment.');
 server.registerResource('monitor-panel', widgetUri, { mimeType: 'text/html;profile=mcp-app' }, async () => ({
     contents: [{ uri: widgetUri, mimeType: 'text/html;profile=mcp-app', text: widgetHtml,
@@ -25,7 +25,7 @@ async function present(threadId, tool, data, isError = false, report) {
 async function call(threadId, method, params) {
     try {
         const result = await rpc(await ensureService(threadId), method, params, 60000);
-        return present(threadId, `monitor_${method}`, result, result.state === 'failed');
+        return present(threadId, `monitor_${method}`, result, ['failed', 'goal_pause_required'].includes(result.state));
     }
     catch (e) {
         const result = { ok: false, error: { code: 'MONITOR_REQUEST_FAILED', message: bounded(e) },
@@ -69,7 +69,7 @@ server.registerTool('monitor_display', { title: toolTitles.monitor_display,
 server.registerTool('monitor_stop', { title: toolTitles.monitor_stop, description: 'Stop observation; preserve an observed PID. An owned command is terminated with its descendants. Cancel dependent wait without resuming goal.', inputSchema: {
         thread_id: thread, monitor_id: z.string().uuid(),
     }, _meta: widgetMeta }, ({ thread_id, ...params }) => call(thread_id, 'stop', params));
-server.registerTool('monitor_wait', { title: toolTitles.monitor_wait, description: 'Record waiting for ANY selected monitor and return immediately. Quote actual user authorization for conditional goal pause AND resume; do not invent it. Only pause after independent work is exhausted. Verify goal_control: paused, then end the current turn: pause does not interrupt it. Without authorization goal_control is unchanged and an active goal keeps continuing.', inputSchema: {
+server.registerTool('monitor_wait', { title: toolTitles.monitor_wait, description: 'Hand an active goal off to event waiting after independent work is exhausted. Reuse actual user authorization to pause while waiting AND resume on an event in goal_authorization; do not invent it or ask again when already authorized. Verify state: waiting and goal_control: paused, then end the turn. An active goal without authorization returns goal_pause_required, never waiting. With no active goal, notification waiting leaves it unchanged. ANY selected event may release the wait; use quiet completion/health triggers for training.', inputSchema: {
         thread_id: thread, monitor_ids: z.array(z.string().uuid()), resume_instructions: z.string(), goal_authorization: z.string().optional(),
     }, _meta: widgetMeta }, ({ thread_id, ...params }) => call(thread_id, 'wait', params));
 server.registerTool('monitor_cancel_wait', { title: toolTitles.monitor_cancel_wait, description: 'Cancel wait, mute selected notifications and leave goal unchanged. Cannot recall in-flight events.', inputSchema: { thread_id: thread }, _meta: widgetMeta }, ({ thread_id }) => call(thread_id, 'cancel_wait', {}));

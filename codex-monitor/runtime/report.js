@@ -59,6 +59,8 @@ export function compactReport(report) {
         parts.push(`${stopping} stopping`);
     if (report.recovery?.enabled)
         parts.push('auto-retry on');
+    if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused')
+        parts.push('goal waiting for event');
     return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId, after, waitMs, signal, root = stateRoot()) {
