@@ -65,9 +65,18 @@ export class Recovery {
         clearTimeout(this.timer);
         this.state = { ...this.state, enabled: false, state: 'configuring', next_retry_at: null };
         this.save();
-        const bridge = await this.connect();
-        await loaded(bridge, this.threadId);
-        const latest = await latestTurn(bridge, this.threadId);
+        let latest;
+        try {
+            const bridge = await this.connect();
+            await loaded(bridge, this.threadId);
+            latest = await latestTurn(bridge, this.threadId);
+        }
+        catch (e) {
+            // A late host error must not replace a newer opt-out or interruption.
+            if (epoch !== this.epoch)
+                return this.snapshot();
+            throw e;
+        }
         if (epoch !== this.epoch)
             return this.snapshot();
         this.currentRetry = undefined;
@@ -101,7 +110,7 @@ export class Recovery {
         return false;
     }
     notice(method, params) {
-        if (!this.state.enabled || params.threadId !== this.threadId)
+        if ((!this.state.enabled && this.state.state !== 'configuring') || params.threadId !== this.threadId)
             return;
         if (method === 'turn/completed' && params.turn?.status === 'interrupted') {
             this.halt('Turn interrupted; never retry an interruption', 'cancelled');
@@ -109,8 +118,10 @@ export class Recovery {
         }
         if (method === 'thread/goal/updated' && params.goal?.status !== 'active') {
             if (this.waiting()) {
-                this.state.state = 'waiting';
-                this.save();
+                if (this.state.enabled) {
+                    this.state.state = 'waiting';
+                    this.save();
+                }
                 return;
             }
             this.halt(`Goal is ${params.goal?.status}; re-enable explicitly after resuming`, 'cancelled');

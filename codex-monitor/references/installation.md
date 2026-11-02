@@ -2,7 +2,7 @@
 
 Run `node install.mjs` from the complete repository or extracted release package in a normal terminal. It needs only Node.js to start; it checks Node 22.22+, npm and Codex CLI 0.166.0+ before installing. Node 24 and Codex 0.166.0 are the Windows validation baseline. The wizard does not install Node, Codex, Docker or OS services.
 
-The wizard asks for the Codex configuration directory, client (CLI/desktop/both), default display mode, whether to include Stop/Interrupt reports, and whether to start the background launcher. Defaults are CLI, compact output, included reports and launcher startup. Existing installations require an explicit replacement choice and a final review of the plan. Recovery is configured separately per conversation; installation does not authorize or enable retries.
+The wizard asks for the Codex configuration directory, client (CLI/desktop/both), display mode, Stop/Interrupt reports, launcher startup and automatic recovery. Defaults are CLI, compact output, reports, launcher startup and automatic recovery enabled. The displayed recovery policy retries abnormal failures every 300 seconds for up to 3 hours per incident, with a separate 24-hour supervisor lifetime; manual interruption and host limits take precedence. Select no, or set `recovery: false` in an answers file, to opt new threads out. Recovery activates on first monitor/wait use, not just installation. Existing per-thread opt-outs and interrupted policies are preserved. Existing installations require a replacement choice and final review of the plan.
 
 For `develop`, setup installs development dependencies and builds in the checkout. For a deployment package, it uses the included JavaScript. Both paths prepare a new durable deployment source under `CODEX_HOME/plugin-sources/codex-monitor`, install production dependencies, and verify a fresh MCP connection before changing plugin registration. A shared packaging allowlist excludes tests, workflows, TypeScript sources, reports, development dependencies and local state. Use `npm run package` after building to prepare a deployment package yourself.
 
@@ -21,6 +21,7 @@ Preview the wizard with `node install.mjs --dry-run`. For automation or an agent
   "display": "compact",
   "hooks": true,
   "bootstrap": false,
+  "recovery": true,
   "replace": false
 }
 ```
@@ -32,20 +33,20 @@ node install.mjs --config answers.json --dry-run
 node install.mjs --config answers.json --yes
 ```
 
-`--yes` requires an explicit configuration file. It confirms the reviewed installation choices, not Hook trust, recovery, goal changes or workload cancellation. Preview does not install dependencies or change plugin registration/preferences. Codex's diagnostic commands can maintain their own caches. If the selected home does not exist, preflight uses a disposable diagnostic home and leaves the selected path uncreated. A real installation may access the npm registry for locked dependencies. Invalid configuration and failed preflight stop before registration.
+`--yes` requires an explicit configuration file. It confirms the reviewed installation choices, including the displayed recovery default, not Hook trust, goal changes or workload cancellation. Preview does not install dependencies or change plugin registration/preferences. Codex's diagnostic commands can maintain their own caches. If the selected home does not exist, preflight uses a disposable diagnostic home and leaves the selected path uncreated. A real installation may access the npm registry for locked dependencies. Invalid configuration and failed preflight stop before registration.
 
-The installer saves only the display default in `<monitor-state>/settings.json`. A per-thread `monitor_display` setting takes precedence. Changing display preferences outside the bundle does not invalidate Hook trust. The install receipt is `<codex_home>/plugin-sources/codex-monitor/last-install.json`.
+The installer saves `display_mode` and `recovery_enabled` in `<monitor-state>/settings.json`. A per-thread `display` setting takes precedence for display; explicit per-thread recovery opt-outs take precedence over the installation default. Changing these preferences outside the bundle does not invalidate Hook trust. Recovery activates on first operational monitor/wait use in a new thread and is not automatically restarted after an interruption or service restart. The install receipt is `<codex_home>/plugin-sources/codex-monitor/last-install.json`.
 
 ## Make the plugin effective
 
 1. Finish installation before trusting hooks. Do not copy more files into the installed bundle afterward.
 2. Fully exit and reopen the CLI or desktop client; resume the intended conversation. A hot reload or a tool list containing new names does not prove that an existing connection is using the new implementation.
-3. In `/plugins`, confirm `codex-monitor` is enabled. In `/mcp`, check that `monitor` is connected. Ask Codex to actually call `monitor_display` with the current caller thread ID. This must execute, rather than merely appear in discovery.
+3. In `/plugins`, confirm `codex-monitor` is enabled. In `/mcp`, check that `monitor` is connected. Ask Codex to actually call `display` with the current caller thread ID. This must execute, rather than merely appear in discovery.
 4. If reports were included, open `/hooks`, review the exact `codex-monitor` Stop and Interrupt commands, and trust them. Only the official review flow grants trust. If the user has already authorized an assisting agent to review these exact hooks, the agent may complete that UI flow. The installer itself never edits trust databases or bypasses approval. Choosing `hooks: false` packages an empty hook list; reports remain available through MCP.
 5. Start the launcher from an external terminal using the exact command printed by setup. Run it again after login/reboot. Startup failures are reported separately from installation success. Use the same `CODEX_HOME` and `CODEX_MONITOR_HOME` in that terminal and Codex.
 6. Run a short command-exit demo. Verify the running count, callback, event inspection/acknowledgement, and normal Stop report. Do not leave test observers active.
 
-CLI results are text. The background callback wakes the agent but does not itself appear as an independent arrival card; the awakened agent calls `monitor_event` to show the event result. HTML panels require a supporting graphical host and are not visually validated on desktop. `Stop` runs when the turn actually ends; queued callbacks can keep it active, and manual interruption uses `Interrupt` instead.
+CLI results are text. The background callback wakes the agent but does not itself appear as an independent arrival card; the awakened agent calls `event` to show the event result. HTML panels require a supporting graphical host and are not visually validated on desktop. `Stop` runs when the turn actually ends; queued callbacks can keep it active, and manual interruption uses `Interrupt` instead.
 
 If using a simulation home, keep `CODEX_HOME` pointed at that directory when launching Codex, and restore your previous environment afterward. The wizard never copies account credentials to a simulation home; authenticate separately if you want a real model conversation there.
 

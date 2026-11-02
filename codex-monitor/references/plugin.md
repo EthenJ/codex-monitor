@@ -16,11 +16,11 @@ Run bootstrap from an external terminal once per login/reboot. Its hidden launch
 
 ## Tools and state
 
-All eleven MCP tools return readable plain text, structured data, and an optional MCP Apps view. Routine `monitor_report` and Stop/Interrupt messages are a single line, for example `Monitor · 2 running`. Starting/stopping counts and enabled automatic retry are included only when applicable. Inactive monitors, IDs and event history are omitted from routine text; full details remain in structured data and `monitor_status`. Unverified saved state produces `Monitor · live status unavailable` rather than a stale running count. No tool duplicates its JSON in text or uses Markdown tables: Codex CLI renders these blocks literally, including assistant-audience blocks.
+All eight MCP tools return readable plain text, structured data, and an optional MCP Apps view. Routine `status` and Stop/Interrupt messages are a single line, for example `Monitor · 2 running`. Starting/stopping counts and enabled automatic retry are included only when applicable. Inactive monitors, IDs and event history are omitted from routine text; full details remain in structured data and `status`. Unverified saved state produces `Monitor · live status unavailable` rather than a stale running count. No tool duplicates its JSON in text or uses Markdown tables: Codex CLI renders these blocks literally, including assistant-audience blocks.
 
-Use `monitor_report(details: "active")` for a readable active-only list with each monitor's name, state, type and ID. Compact mode defaults to `details: "summary"`; verbose defaults to active details, with an explicit override available. The CLI's native transcript retains full result text; it controls preview and expansion. A Stop/Interrupt hook has no separate clickable detail field in the inspected CLI 0.166.0 interface. Switching to an MCP hook does not create an ordinary tool card, and plugin metadata cannot replace the CLI's raw invocation JSON with a custom summary.
+Use `status(details: "active")` for a readable active-only list with each monitor's name, state, type and ID. Compact mode defaults to `details: "summary"`; verbose defaults to active details, with an explicit override available. The CLI's native transcript retains full result text; it controls preview and expansion. A Stop/Interrupt hook has no separate clickable detail field in the inspected CLI 0.166.0 interface. Switching to an MCP hook does not create an ordinary tool card, and plugin metadata cannot replace the CLI's raw invocation JSON with a custom summary.
 
-Keep call arguments short: `monitor_wait` accepts omitted `resume_instructions`. A current live wait retains its instructions after goal ownership/readiness verification; a new wait defaults to inspecting the triggering event and continuing the existing task within authorization. Ended/restarted waits do not supply old instructions. Explicit instructions remain supported for changing the next action. Avoid repeating task history; use existing handoff references for lengthy context. This reduces raw invocation length without dropping required observation settings or granting goal authority.
+Keep call arguments short: `poll` accepts omitted `resume_instructions`. A current live wait retains its instructions after goal ownership/readiness verification; a new wait defaults to inspecting the triggering event and continuing the existing task within authorization. Ended/restarted waits do not supply old instructions. Explicit instructions remain supported for changing the next action. Avoid repeating task history; use existing handoff references for lengthy context. This reduces raw invocation length without dropping required observation settings or granting goal authority.
 
 ## Observer capacity
 
@@ -32,19 +32,19 @@ Consolidate only compatible sources with the same workload and handling policy. 
 
 ## Event display
 
-`monitor_display` gets or sets `mode: "compact" | "verbose"` for the exact caller thread. Compact is the default. The setting lives in the thread's state directory, outside the installed plugin, and applies to subsequent tool calls and callbacks without a restart or hook reapproval. It does not change observation, delivery, recovery or goal policy. Invalid updates are rejected; corrupt saved preferences fall back to compact with a warning. Compact reduces calls through the skill workflow, rather than hiding completed calls: Codex owns the `Called` headers and exposes no supported per-call hiding flag in the inspected 0.166.0 interface. MCP `ui.visibility` controls model/app access, not terminal output.
+`display` gets or sets `mode: "compact" | "verbose"` for the exact caller thread. Compact is the default. The setting lives in the thread's state directory, outside the installed plugin, and applies to subsequent tool calls and callbacks without a restart or hook reapproval. It does not change observation, delivery, recovery or goal policy. Invalid updates are rejected; corrupt saved preferences fall back to compact with a warning. Compact reduces calls through the skill workflow, rather than hiding completed calls: Codex owns the `Called` headers and exposes no supported per-call hiding flag in the inspected 0.166.0 interface. MCP `ui.visibility` controls model/app access, not terminal output.
 
-In compact mode, a callback directs the agent to `monitor_event(event_ids)` for a visible trigger card, complete evidence and registered actions. After handling, `monitor_event(event_ids, resolution)` acknowledges those IDs and includes the final status in the same card. If evidence was already inspected and work completed, only the latter call is necessary. Do not acknowledge uninspected work just to combine calls. This replaces the old status/ack/stop/report sequence with one or two event cards. Naturally stopped observers require no extra stop call. Live observers continue until their deadline or explicit cancellation, and unrelated/newer events are preserved. Expired, superseded, suppressed and already acknowledged events retain their state; unknown IDs reject the whole selection before acknowledgements.
+In both display modes, a callback directs the agent to `event(event_ids)` for a visible trigger card, complete evidence and registered actions. After handling, `event(event_ids, resolution)` acknowledges those IDs and includes the final status in the same card. If evidence was already inspected and work completed, only the latter call is necessary. Do not acknowledge uninspected work just to combine calls. Naturally stopped observers require no extra stop call. Live observers continue until their deadline or explicit cancellation, and unrelated/newer events are preserved. Expired, superseded, suppressed and already acknowledged events retain their state; unknown IDs reject the whole selection before acknowledgements.
 
-Every operation includes a fresh `report` in structured data for monitor operations and diagnostics. Trusted Stop/Interrupt hooks provide routine end-of-turn summaries; neither display mode requires an extra report call or repeated monitor counts in the final answer. Explicit status/report calls remain available on request and for diagnostics. The CLI event card identifies the workload, trigger, exit status when available, review/acknowledgement state and running count. The optional HTML panel highlights the same selected events. A native wakeup alone remains a `functionCallOutput`; the event card appears when the awakened agent calls the MCP event tool. No extra model turn is submitted solely for UI rendering.
+Operations include a fresh structured status snapshot in the `report` field; `status` returns that snapshot directly. Trusted Stop/Interrupt hooks provide routine end-of-turn summaries; neither display mode requires an extra status call or repeated monitor counts in the final answer. Explicit status calls remain available on request and for diagnostics. The CLI event card identifies the workload, trigger, exit status when available, review/acknowledgement state and running count. The optional HTML panel highlights the same selected events. A native wakeup alone remains a `functionCallOutput`; the event card appears when the awakened agent calls the MCP event tool. No extra model turn is submitted solely for UI rendering.
 
 Codex CLI 0.166.0 does not render this HTML panel. Its `Called server.tool(arguments)` header and expand/collapse controls belong to Codex; the plugin controls the readable result beneath them. Confirm the user's actual client before troubleshooting graphics. CLI text output is not evidence of a desktop rendering failure. Keep the terminal workflow useful without a browser, model-driven refresh loops or claims of an embedded GUI.
 
-The native `monitor_event` notification is readable text, not a JSON serialization. It retains exact monitor/event IDs so the agent can inspect `monitor_status`, follow the registered action and acknowledge the right event. Evidence and workload-provided instructions are not printed in the notification. Session recovery uses the same native channel with the retry attempt, policy, failed-turn ID and recovery ID. The host API provides only one output string for these notifications, so their necessary routing references remain visible.
+The native `monitor.event` notification is readable text, not a JSON serialization. It retains exact monitor/event IDs so the agent can call `event`, follow the registered action and resolve the right event. Evidence and workload-provided instructions are not printed in the notification. Session recovery uses the same native channel with the retry attempt, policy, failed-turn ID and recovery ID. The host API provides only one output string for these notifications, so their necessary routing references remain visible.
 
-`monitor_report` opens a live status panel on compatible hosts; other operation cards offer a button to start live updates. The timeline records monitor creation/arming/stopping, event delivery and acknowledgement, goal waits and recovery changes. History is capped at 128 transitions, with an explicit omitted count. Routine health samples are not lifecycle transitions.
+`status` opens a live status panel on compatible hosts; other operation cards offer a button to start live updates. The timeline records monitor creation/arming/stopping, event delivery and acknowledgement, goal waits and recovery changes. History is capped at 128 transitions, with an explicit omitted count. Routine health samples are not lifecycle transitions.
 
-The panel uses `monitor_report(after_revision, wait_ms)` with a bounded event wait (up to 25 seconds), then re-arms in the UI. This is long polling at the transport layer, not model-side polling or a model wakeup. There is at most one outstanding request per view and 32 per thread. Hidden/closed views stop re-arming; disconnects stop live mode until explicitly retried. Reports never launch an observer, enable recovery or submit a turn. Legacy services and hosts without MCP Apps retain snapshot/text results. Background changes cannot create arbitrary native chat items: they update the panel history, and the normal callback turn's tool calls render event cards. Stop/Interrupt hook messages remain host-controlled informational output.
+The panel uses `status(after_revision, wait_ms)` with a bounded event wait (up to 25 seconds), then re-arms in the UI. This is long polling at the transport layer, not model-side polling or a model wakeup. There is at most one outstanding request per view and 32 per thread. Hidden/closed views stop re-arming; disconnects stop live mode until explicitly retried. Reports never launch an observer, enable recovery or submit a turn. Legacy services and hosts without MCP Apps retain snapshot/text results. Background changes cannot create arbitrary native chat items: they update the panel history, and the normal callback turn's tool calls render event cards. Stop/Interrupt hook messages remain host-controlled informational output.
 
 To enable automatic stop reports, review and trust the installed plugin's exact Stop and Interrupt definitions using Codex `/hooks`. Finish all builds, dependency installation and file synchronization before reviewing hooks: Codex 0.166.0 also fingerprints the entire installed plugin directory. Changing runtime files, dependencies or documentation afterward invalidates approval, even if `hooks/hooks.json` is unchanged. Keep the installed bundle unchanged after approval. When the user has authorized this setup, the agent may complete that supported UI flow without asking again. The plugin never grants itself trust or bypasses Codex's trust enforcement. Hosts may require MCP Apps support to be enabled before displaying the HTML view.
 
@@ -52,23 +52,35 @@ For `plugin contents changed; hook approval required`, finish the update, inspec
 
 | Tool | Purpose |
 | --- | --- |
-| `monitor_start` | Register an observer; return readiness and deadline |
-| `monitor_event` | Show selected triggers and evidence; optionally acknowledge handled events and return final status |
-| `monitor_display` | Get/set per-thread compact or verbose presentation without restarting |
-| `monitor_validate` | Read-only preflight, normalized settings and structured checks |
-| `monitor_report` | Compact structured status without creating a service |
-| `monitor_status` | Monitors, delivery, wait and recovery; select a monitor for full evidence |
-| `monitor_stop` | Stop observation, preserving a watched PID |
-| `monitor_wait` | Record dependency and optionally pause goal with authorization |
-| `monitor_cancel_wait` | Cancel wait and mute its notifications; leave goal unchanged |
-| `monitor_ack` | Record handled or dismissed events and their resolution |
-| `monitor_recovery` | Configure bounded recovery after eligible session errors |
+| `start` | Register an observer; return readiness and deadline |
+| `event` | Show selected triggers and evidence; optionally acknowledge handled events and return final status |
+| `display` | Get/set per-thread compact or verbose presentation without restarting |
+| `validate` | Read-only preflight, normalized settings and structured checks |
+| `status` | Read-only summary, active list or full evidence; never starts a service |
+| `stop` | Stop a selected observer, or use `target: "wait"` to stop only waiting |
+| `poll` | Block until an event, CLI input or timeout; explicit pause mode retains authorized native pause/resume |
+| `recovery` | Configure bounded recovery after eligible session errors |
 
 Every tool requires the exact caller thread UUID. Per-thread state lives under `~/.codex/monitor-node` or `CODEX_MONITOR_HOME`, outside watched trees. The private local HTTP endpoint uses a random bearer token. Observers survive MCP disconnects. Services exit after one idle minute once observations, delivery, waits and recovery settle.
 
+These short tool IDs use the `monitor` MCP namespace, for example `monitor.start`,
+`monitor.poll` and `monitor.event`. v0.3.0 replaces the old `monitor_`-prefixed
+IDs; reload the upgraded plugin so the current conversation sees the new list.
+The native callback is also `monitor.event`, but it is a routing notice;
+invoke the MCP event tool for full evidence and structured timing.
+
+The public API also merges the former reporting and acknowledgement operations:
+`status` supports summaries, active lists, full evidence and UI revision waits;
+`event` handles both inspection and resolution. Cancel waiting with
+`stop(target: "wait")`, or stop an observer with `stop(monitor_id: ...)`.
+Exactly one stop target is required. Stopping waiting releases the pending call
+and mutes its selected notifications while preserving observers, processes and
+the native goal; a pause-mode goal remains paused. There are no separate public
+`report`, `ack` or `cancel_wait` tools.
+
 ## Typed configuration and preflight
 
-The existing `monitor_start` shape remains compatible, but `options` now advertises command/watchdog schemas in MCP `tools/list`: types, ranges, enums, descriptions and rejection of misspelled fields. `kind` is optional and inferred. A command without `match` observes exit only:
+The existing `start` shape remains compatible, but `options` now advertises command/watchdog schemas in MCP `tools/list`: types, ranges, enums, descriptions and rejection of misspelled fields. `kind` is optional and inferred. A command without `match` observes exit only:
 
 ```json
 {"thread_id":"<current UUID>","name":"tests","options":{"cwd":"C:/project","command":"npm test"},"instructions":"Inspect the test result and continue."}
@@ -83,7 +95,7 @@ For a file use `options: {"cwd":"C:/project","watch_file":"runs/metrics.json"}`;
 }
 ```
 
-Pass this to `monitor_validate`. Use `operation: "recovery"` with a recovery config to check authorization, timing and the current goal without enabling it. Result fields are `valid`, `normalized`, `checks`, `errors` (code/path/message), `warnings` and `checked_at`. Input schema/type errors use the standard MCP error response; semantic/environment failures return `isError: true` with structured evidence. Recovery previews omit authorization text; supply the original authorization when enabling.
+Pass this to `validate`. Use `operation: "recovery"` with a recovery config to check authorization, timing and the current goal without enabling it. Result fields are `valid`, `normalized`, `checks`, `errors` (code/path/message), `warnings` and `checked_at`. Input schema/type errors use the standard MCP error response; semantic/environment failures return `isError: true` with structured evidence. Recovery previews omit authorization text; supply the original authorization when enabling.
 
 Validation checks source combinations, ranges, regex/encoding, filesystem access, state-directory aliases, existing PIDs and an optional bounded `nvidia-smi` query. Host verification defaults on and only reads the exact loaded thread/goal; it does not resume or start a turn. `check_host: false` explicitly skips it. Missing watched files are supported when their parent exists. Commands are never executed to test them, so command existence/success is unverified. A custom `nvidia_smi` executable is run for a metrics query only when explicitly supplied. Observers are not armed by validation and a successful snapshot does not guarantee later readiness.
 
@@ -91,11 +103,11 @@ Start automatically repeats schema and local prerequisite checks before recordin
 
 ## Automatic status reports
 
-`monitor_report(thread_id)` returns a genuine MCP tool result with `type: monitor_report`, timestamps, summary counts, monitor deadlines, pending events, wait and recovery policy, and stop actions. It never creates a service, observer or model turn. If the service is unreachable, saved state is explicitly `verified: false`; historical `armed`/`enabled` fields are not proof of live supervision. Output omits raw evidence, commands and authorization text, and bounds histories with omitted counts.
+`status(thread_id)` returns a genuine MCP tool result with `type: monitor_report`, timestamps, summary counts, monitor deadlines, pending events, wait and recovery policy, and stop actions. It never creates a service, observer, recovery policy or model turn. If the service is unreachable, saved state is explicitly `verified: false`; historical `armed`/`enabled` fields are not proof of live supervision. The default summary omits raw evidence, commands and authorization text. `details: "active"` adds a readable active list; `details: "full"` includes bounded configuration and evidence in structured data. `monitor_id` selects one observer and implies full details, including up to eight of its historical events. Counts and capacity remain thread-wide. UI `after_revision`/`wait_ms` cannot be combined with a selected observer or full details; `wait_ms` requires `after_revision`.
 
 The plugin includes synchronous `Stop` and `Interrupt` command hooks. They use the hook event's exact `session_id`, perform a bounded read, and return the hook protocol's JSON envelope with one human-readable `systemMessage`, such as `Monitor · 2 running`. They do not serialize the full report into that message. They never return a continuation/block decision or submit a callback, so reports cannot create an agent wake loop or override manual interruption. They do not cancel workloads or recovery; interruption handling remains the supervisor's responsibility.
 
-Review and trust these hooks in Codex `/hooks` after installing/upgrading. Trust is required by Codex for the current hook definition, not granted automatically by this plugin. The host renders hook status messages; they are not synthetic MCP calls. `monitor_report` is the direct tool-call display path. `codex exec --json` can omit hook messages even when hooks execute, and host shutdown cannot guarantee a final report. See [official hook behavior and trust](https://learn.chatgpt.com/docs/hooks).
+Review and trust these hooks in Codex `/hooks` after installing/upgrading. Trust is required by Codex for the current hook definition, not granted automatically by this plugin. The host renders hook status messages; they are not synthetic MCP calls. `status` is the direct tool-call display path. `codex exec --json` can omit hook messages even when hooks execute, and host shutdown cannot guarantee a final report. See [official hook behavior and trust](https://learn.chatgpt.com/docs/hooks).
 
 ## Training example
 
@@ -142,25 +154,76 @@ Command debounce suppresses only consecutive identical matching lines within its
 
 The existing daemon's WebSocket proxy receives `turn/start` with `input: []` and `toolOutput`. Events retain `functionCallOutput` identity rather than becoming user chat messages. Standard MCP notifications alone do not imply a new turn. No undocumented MCP wake feature or chat fallback is used.
 
-The service joins only an already-loaded thread for lifecycle notifications, without replacing it or changing its settings. Short event payloads carry IDs and trigger summaries; full evidence and registered actions are available through `monitor_event` or `monitor_status`. Model instructions and source evidence remain distinct.
+The service joins only an already-loaded thread for lifecycle notifications, without replacing it or changing its settings. Short event payloads carry IDs and trigger summaries; full evidence and registered actions are available through `event` or `status`. Model instructions and source evidence remain distinct.
 
 Before sending, duplicates are coalesced, newer matching events supersede pending ones, acknowledged events are skipped, and expired events are discarded. A 250 ms batching window groups at most eight events. Registration/history are bounded. Reusing a name after an old monitor finishes supersedes that monitor's pending events.
 
-Lifecycle: `pending -> sending -> submitted -> acknowledged`; alternatives include `superseded`, `expired`, `suppressed`, `failed`, and `unknown`. Turn completion does not prove every event was handled. Explicit acknowledgement through `monitor_event` with a resolution or `monitor_ack` records the agent's resolution. Acknowledgement/expiry cannot recall an already queued result. Uncertain submissions are not automatically retried; exactly-once execution is not guaranteed.
+Callback lifecycle: `pending -> sending -> submitted -> acknowledged`. Blocking delivery uses `pending -> returned -> acknowledged`; additional callbacks stay local while returned evidence awaits reconciliation. Alternatives include `superseded`, `expired`, `suppressed`, `failed`, and `unknown`. Turn completion does not prove every event was handled. Explicit acknowledgement through `event` with a resolution records the agent's resolution. Acknowledgement/expiry cannot recall an already queued result. Uncertain submissions are not automatically retried; exactly-once execution is not guaranteed.
+
+Event results carry structured `timing` for the agent: `wait_elapsed_ms`,
+`wait_basis` (`poll`, `monitor`, or `unknown`), `wait_started_at`,
+`monitor_registered_at` and `monitor_elapsed_ms`. Poll-associated events also
+identify `wait_id` and `wait_mode`. Durations are frozen when the supervisor
+observes the event, excluding callback queues and later inspection; source
+timestamps cannot override them. Missing historical timing remains unknown.
+They are available through `event`, `status`, structured reports
+and blocking results. Callback routing text, regular cards, hooks and the HTML
+panel do not add timing output. Agents use the data internally unless asked.
+
+## CLI blocking waits
+
+The default `poll` mode is `blocking`. Omit `timeout_ms` for a one-hour
+wait; when supplied, the valid value takes precedence. Schema and service fill
+the default only when omitted. Maximum wait is 24 hours. `input_poll_ms` controls local
+sampling (50–5,000 ms, default 250 ms) without model calls. Require finite live
+error/expiry fallbacks and reconcile unresolved thread events before waiting.
+
+The tool stays pending in the current active turn while the native goal stays
+active or absent. An externally paused/ended goal is never resumed. An eligible
+event, finite timeout or new CLI input releases the call. Events and registered
+actions return in the same MCP result, without injecting another callback turn.
+Inspect and acknowledge handled IDs. `returned` records the prepared handoff,
+not confirmed receipt or acknowledgement. Timeout returns once; reassess work
+rather than repeatedly making short wait calls. Goal elapsed time may continue.
+
+CLI 0.166.0 queues steering input before emitting a user-message event. Polling
+`thread/read` or persisted turns cannot detect it while a normal MCP call stays
+pending. The adapter instead incrementally reads newly appended records in
+`<CODEX_HOME>/history.jsonl`, matching only the caller UUID. Existing prompts and
+other threads never wake the call. Message text is not replayed or treated as
+authorization; Codex consumes its own queued input when the tool returns.
+History must be enabled and readable; `history.persistence = "none"` refuses
+blocking even when an old history file remains. This adapter is specific to CLI behavior,
+not a stable input-queue protocol or a promise of desktop support.
+
+Missing history refuses registration. Replacement, truncation or loss of read
+access releases as `input_unavailable` instead of silently waiting indefinitely.
+MCP/host disconnect releases the call and holds callbacks while preserving live
+observers and evidence. Reconnect, reconcile unresolved events, then attach a new
+wait. Explicit cancellation or manual interruption still suppresses notifications.
+An actual service restart marks observers unknown and never reruns workloads.
+
+The packaged MCP timeout is 86,420 seconds, covering the 24-hour maximum and
+cleanup; host/user overrides may be shorter. Local HTTP cancellation releases
+the wait. Only the input-tail sampler runs repeatedly, not the model.
 
 ## Native goal waiting
+
+This compatibility workflow requires explicit `mode: "pause"`; it is no longer
+the default CLI wait.
 
 Example authorization: “When only training remains, pause this goal; resume it on completion or a monitoring alert.” Supply the actual instruction in `goal_authorization`. Existing authorization persists; a nonempty string records intent but cannot prove consent.
 
 Original goal viewing/editing/status remain in Codex. The plugin preserves objective, budget and usage, pauses the goal during external waiting, sends a native result, then resumes the same unchanged goal. An active goal without `goal_authorization` returns the MCP error `goal_pause_required` / `GOAL_PAUSE_AUTHORIZATION_REQUIRED`, rather than registering a notification-only wait. Reuse the applicable existing user instruction. Notification-only waiting remains available when no goal is active.
 
-Before pausing, `monitor_wait` checks **all unhandled events in this exact conversation**, not just the supplied IDs. Submitted, unknown and failed deliveries also require reconciliation. `state: ready` returns event IDs when available; handle them before trying to wait again. It also returns ready when no verified live source exists. Live sources must have finite deadlines and notify on both `monitor_error` and `monitor_expired`; missing fallbacks return the MCP error `guard_required` / `MONITOR_GUARD_REQUIRED` without pausing. Training additionally needs meaningful PID/progress/GPU monitoring; expiry/error delivery is a minimum bounded fallback, not proof of training health. Readiness is checked again after asynchronous goal reads to catch newly arrived events.
+Before pausing, `poll` checks **all unhandled events in this exact conversation**, not just the supplied IDs. Submitted, unknown and failed deliveries also require reconciliation. `state: ready` returns event IDs when available; handle them before trying to wait again. It also returns ready when no verified live source exists. Live sources must have finite deadlines and notify on both `monitor_error` and `monitor_expired`; missing fallbacks return the MCP error `guard_required` / `MONITOR_GUARD_REQUIRED` without pausing. Training additionally needs meaningful PID/progress/GPU monitoring; expiry/error delivery is a minimum bounded fallback, not proof of training health. Readiness is checked again after asynchronous goal reads to catch newly arrived events.
 
 Default `wake_scope: "thread"` releases on **ANY monitor in the same conversation**, including newly registered sources. `monitor_ids` is optional, and passing it alone does not narrow the wake scope. For an explicitly narrower policy, set `wake_scope: "selected"` and supply a nonempty ID list. Only the exact caller thread is included. Routine training progress must stay quiet across all sources (`watchdog_only: true`); a file change or output match that is subscribed for notification releases an ANY-event wait.
 
 ```json
 {
   "thread_id": "<exact caller CODEX_THREAD_ID>",
+  "mode": "pause",
   "resume_instructions": "Inspect the triggering event, reconcile its effects and continue the goal.",
   "goal_authorization": "<existing user instruction to pause while waiting and resume on any monitor event>"
 }
@@ -172,7 +235,7 @@ Early monitor events remain pending until native lifecycle notifications and a h
 
 The wait result distinguishes `goal_control: paused`, `unchanged`, `resumed` and `unverified`. These record the operation's control result, not perpetual verification of the native goal. Equivalent scope, requested IDs, instructions and authorization reuse the active wait but still check unresolved events. Expired historical events do not block a new wait. `guard_ids` records verified fallback sources at registration; a monitor may naturally stop after producing an event.
 
-Pause ownership is tracked separately from the wait record. `pause_owner: plugin` comes from a confirmed plugin pause and a matching native goal; ordinary usage accounting preserves it. Follow-up messages do not revoke it. A subsequent `monitor_wait` can update the live wait in place, or explicitly rearm a cancelled/replaced dependency, reusing the unchanged plugin pause without first activating it. The applicable conditional authorization is retained privately while ownership is verified. Cancelling a wait still mutes its notifications and never resumes the goal; rearming is a separate explicit operation.
+Pause ownership is tracked separately from the wait record. `pause_owner: plugin` comes from a confirmed plugin pause and a matching native goal; ordinary usage accounting preserves it. Follow-up messages do not revoke it. A subsequent `poll` can update the live wait in place, or explicitly rearm a cancelled/replaced dependency, reusing the unchanged plugin pause without first activating it. The applicable conditional authorization is retained privately while ownership is verified. Cancelling a wait still mutes its notifications and never resumes the goal; rearming is a separate explicit operation.
 
 A new explicit goal action (including an identical same-second manual pause), user interruption, disconnect or service restart revokes ownership. `pause_owner: external` means an observed goal action outside this plugin, which may be the user or another client; `unknown` means ownership could not be established. The native paused status alone is never adopted. `state: goal_paused`, `goal_control: unchanged` is a normal readable refusal to take over an external/unverified pause, not a failed pause attempt. Resume the goal explicitly before requesting automatic waiting in that case. Ended/absent/exhausted goals return `goal_unavailable` / `GOAL_UNAVAILABLE`. Reports expose only ownership metadata, not the retained goal snapshot or authorization. Ownership is not restored from saved state after restart.
 
@@ -182,7 +245,17 @@ If a pending wake is acknowledged or expires, the wait becomes `interrupted` and
 
 ## Session recovery
 
-Recovery requires separate user authorization:
+Recovery defaults to enabled on the first monitor/wait operation in a new thread,
+unless setup selected `recovery: false`. Its preset is `all_failed`, fixed
+300-second delay, a three-hour incident limit and a separate 24-hour supervisor
+lifetime. It is initialized once, not after every monitor call. Explicit disable,
+manual interruption, exhausted policies, restart and uncertain submissions are
+never silently re-enabled. Merely installing or displaying the plugin does not
+start a per-thread supervisor. A host verification failure is reported as
+`default_unavailable` rather than claiming recovery is running.
+
+Use `recovery(enabled: false)` for a per-thread opt-out. To explicitly
+enable or customize a policy, include the applicable authorization, for example:
 
 ```json
 {
@@ -204,11 +277,11 @@ Every attempt waits the same **300 seconds** after the eligible failure is obser
 
 For compatibility, `base_delay_ms` is accepted as a deprecated alias for the fixed interval. It must agree with `retry_interval_ms` if both are present. Legacy `max_delay_ms` is validated to be at least that interval, but no longer produces exponential backoff. Existing explicit settings still apply; reconfigure to adopt new defaults. Invalid configuration leaves an existing supervisor intact.
 
-Timers and `check_interval_ms` read the local daemon, not the model. Codex retries first. The default `retry_mode: "transient"` accepts recognized terminal connection/stream/server failures; unknown and HTTP 401/403 errors remain ineligible, and rate-limit retries require `retry_rate_limits: true`. Codex 0.166.0 labels some truncated HTTP bodies `other`; narrowly matched observed transport signatures are eligible.
+Timers and `check_interval_ms` read the local daemon, not the model. Codex retries first. The installation preset uses `all_failed`. An explicit `recovery` configuration that omits `retry_mode` uses the API default `transient`, which accepts recognized terminal connection/stream/server failures; unknown and HTTP 401/403 errors remain ineligible, and rate-limit retries require `retry_rate_limits: true`. Codex 0.166.0 labels some truncated HTTP bodies `other`; narrowly matched observed transport signatures are eligible.
 
 When the user's authorization covers all failed turns, set `retry_mode: "all_failed"`. It accepts unlisted/new errors, absent error details, authentication failures and rate limits, irrespective of `retry_rate_limits`. It does not treat error text in normal tool output, a completed turn or a silent running turn as failure. Explicit host error codes `sessionBudgetExceeded`, `usageLimitExceeded` and `misalignmentPolicyViolation` remain ineligible in both modes. A broader retry may still fail until its underlying cause is fixed.
 
-The transient mode also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. Arbitrary `other` errors require `all_failed`. Recovery must already be enabled; delivery and observation alone do not enable it.
+The transient mode also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. Arbitrary `other` errors require `all_failed`. First monitor/wait use enables the installation preset once unless opted out; later delivery and observation never re-enable a stopped policy.
 
 Before retry, re-read latest turn, runtime status and goal. Interrupted turns, paused/ended goals, exhausted budget and new active work prevent recovery. Manual interruption disables the supervisor until re-enabled. Plugin waits suspend recovery. Silent long tools are not interrupted. Recovery continues the task after reconciling completed effects; it does not replay commands or restart training.
 

@@ -5,6 +5,7 @@
       "command": "node",
       "args": ["codex-monitor/runtime/server.js"],
       "cwd": ".",
+      "tool_timeout_sec": 86420,
       "env_vars": ["CODEX_HOME", "CODEX_MONITOR_HOME", "CODEX_MONITOR_CODEX_BIN", "CODEX_MANAGED_PACKAGE_ROOT"]
     }
   }

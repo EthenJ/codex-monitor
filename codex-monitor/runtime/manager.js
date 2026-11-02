@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { atomicJson, bounded, id, now, readJson, serial, text, threadKey, VERSION } from './common.js';
-import { Bridge, getGoal, loaded, sameGoal, submit } from './bridge.js';
+import { atomicJson, bounded, id, integer, now, readJson, serial, text, threadKey, VERSION } from './common.js';
+import { Bridge, getGoal, latestTurn, loaded, sameGoal, submit } from './bridge.js';
 import { startSensor } from './sensors.js';
 import { validateRequest, ValidationFailure } from './validation.js';
 import { Recovery } from './recovery.js';
@@ -10,7 +10,9 @@ import { Changes } from './changes.js';
 import { eventReviewSchema, DEFAULT_RESUME_INSTRUCTIONS, resumeInstructionsSchema } from './contracts.js';
 import { displaySettings } from './display.js';
 import { monitorCapacity, MonitorCapacityError } from './capacity.js';
-const PENDING = new Set(['pending', 'sending', 'unknown']);
+import { watchInputHistory } from './input-history.js';
+import { homedir } from 'node:os';
+const PENDING = new Set(['pending', 'sending', 'unknown', 'returned']);
 const WAITING = new Set(['preparing', 'waiting', 'waking']);
 const PAUSE_BARRIER = 'Goal is paused; awaiting the current turn to finish';
 export class Manager {
@@ -41,14 +43,23 @@ export class Manager {
     activityRevision = 0;
     activityStatus;
     barrierCheck;
+    blocker;
+    waitCancelRevision = 0;
+    historyFile;
+    defaultsHandled = false;
+    defaultRecoveryTask;
+    callbackHold;
     constructor(directory, threadId, options = {}) {
         this.directory = directory;
         this.threadId = threadId;
         threadKey(threadId);
         this.connectFactory = options.connect || (() => Bridge.connect());
+        this.historyFile = options.historyFile || path.join(process.env.CODEX_HOME || path.join(homedir(), '.codex'), 'history.jsonl');
         let old = {};
         if (existsSync(path.join(directory, 'state.json')))
             old = readJson(path.join(directory, 'state.json'));
+        this.defaultsHandled = old.default_recovery_handled ?? Boolean(old.recovery);
+        this.callbackHold = old.callback_hold;
         this.changes = new Changes(old);
         this.records = old.monitors || {};
         this.events = old.events || {};
@@ -72,13 +83,14 @@ export class Manager {
     }
     save() {
         const data = { version: VERSION, thread_id: this.threadId, sequence: this.sequence, monitors: this.records,
-            events: this.events, wait: this.wait, goal_pause: this.goalPause, recovery: this.recovery?.state };
+            events: this.events, wait: this.wait, goal_pause: this.goalPause, recovery: this.recovery?.state,
+            default_recovery_handled: this.defaultsHandled, callback_hold: this.callbackHold };
         const changed = this.changes.update(data);
         atomicJson(path.join(this.directory, 'state.json'), { ...data, revision: this.changes.revision, changes: this.changes.entries });
         if (changed)
             this.changes.notify();
     }
-    snapshot(monitorId) {
+    snapshot(monitorId, full = false) {
         this.lastUsed = now();
         if (monitorId && !Object.hasOwn(this.records, monitorId))
             throw Error('Unknown monitor ID');
@@ -86,13 +98,15 @@ export class Manager {
         return structuredClone({ version: VERSION, thread_id: this.threadId, checked_at: now(), service_pid: process.pid,
             revision: this.changes.revision, changes: this.changes.entries,
             capacity: monitorCapacity(this.jobs.size),
-            monitors: records.map(r => monitorId ? r : { id: r.id, name: r.name, kind: r.kind, state: r.state, muted: r.muted, deadline: r.deadline, backend: r.backend,
+            monitors: records.map(r => monitorId || full ? r : { id: r.id, name: r.name, kind: r.kind, state: r.state, muted: r.muted, deadline: r.deadline, backend: r.backend,
                 observed_pid: r.observed_pid, latest_event: r.latest_event, error: r.error, outcome: r.outcome }),
-            events: Object.values(this.events).filter(e => !monitorId || e.monitor_id === monitorId).map(e => monitorId ? e : {
+            events: Object.values(this.events).filter(e => !monitorId || e.monitor_id === monitorId).map(e => monitorId || full ? e : {
                 id: e.id, monitor_id: e.monitor_id, event_type: e.event_type, state: e.state, occurred_at: e.occurred_at, expires_at: e.expires_at,
+                timing: e.timing,
                 submitted_turn: e.submitted_turn, processing: e.processing, deferred_reason: e.deferred_reason, error: e.error
             }),
-            wait: this.wait && { ...this.wait, authorization: undefined, goal: undefined, pause_owner: this.goalPause.owner },
+            callback_hold: this.callbackHold,
+            wait: this.wait && { ...this.wait, authorization: undefined, goal: undefined, observed_goal: undefined, pause_owner: this.goalPause.owner },
             goal_pause: { owner: this.goalPause.owner, checked_at: this.goalPause.checked_at }, recovery: this.recovery.snapshot() });
     }
     async connect() {
@@ -110,6 +124,8 @@ export class Manager {
                 this.goalPause = { owner: 'unknown', checked_at: now() };
                 this.activityRevision++;
                 this.activityStatus = undefined;
+                if (this.blocker)
+                    this.releaseBlocking('host_disconnected');
                 if (this.wait && WAITING.has(this.wait.state))
                     this.endWait('interrupted', `${error}; inspect before rearming`);
                 this.save();
@@ -144,6 +160,13 @@ export class Manager {
         }
         if (method === 'thread/goal/updated' || method === 'thread/goal/cleared') {
             const goal = method === 'thread/goal/cleared' ? null : params.goal;
+            const observed = this.blocker?.wait.observed_goal;
+            if (this.blocker && (!sameGoal(observed && { ...observed, updatedAt: goal?.updatedAt }, goal) ||
+                goal && goal.status !== 'active'))
+                this.releaseBlocking('goal_changed');
+            if (this.callbackHold && this.wait?.mode === 'blocking' && goal?.status === 'active' && params.turnId === null &&
+                sameGoal({ ...this.wait.observed_goal, status: 'active', updatedAt: goal.updatedAt }, goal))
+                this.callbackHold = undefined;
             this.goalUpdate = { goal };
             const waiting = this.wait;
             const mutation = this.goalMutation;
@@ -165,7 +188,7 @@ export class Manager {
             // even when two pauses share the same second-resolution updatedAt value.
             if (waiting?.goal && WAITING.has(waiting.state) && !ownChange &&
                 (params.turnId === null || !sameGoal(waiting.goal, goal))) {
-                this.endWait('cancelled', 'Goal changed; selected notifications muted');
+                this.goalChanged(goal, 'Goal changed; selected notifications muted');
             }
             if (!goal || goal.status !== 'paused') {
                 for (const event of Object.values(this.events))
@@ -176,6 +199,8 @@ export class Manager {
         }
         this.recovery.notice(method, params);
         if (method === 'turn/completed') {
+            if (this.blocker?.wait.turn_id === params.turn?.id)
+                this.releaseBlocking(params.turn.status === 'failed' ? 'turn_failed' : 'turn_ended');
             for (const event of Object.values(this.events))
                 if (event.submitted_turn === params.turn?.id && event.state === 'submitted')
                     event.processing = params.turn.status;
@@ -218,7 +243,7 @@ export class Manager {
             for (const key of Object.keys(this.records)) {
                 if (Object.keys(this.records).length < 100)
                     break;
-                if (!this.jobs.has(key) && !Object.values(this.events).some(e => e.monitor_id === key && ['pending', 'sending', 'submitted', 'unknown', 'failed'].includes(e.state))) {
+                if (!this.jobs.has(key) && !Object.values(this.events).some(e => e.monitor_id === key && ['pending', 'sending', 'submitted', 'returned', 'unknown', 'failed'].includes(e.state))) {
                     delete this.records[key];
                     for (const [eventId, event] of Object.entries(this.events))
                         if (event.monitor_id === key)
@@ -268,8 +293,9 @@ export class Manager {
         const record = this.records[monitorId];
         if (!record)
             return;
+        const occurredAt = now();
         record.event_count++;
-        record.latest_event = { event_type: raw.event_type, occurred_at: now() };
+        record.latest_event = { event_type: raw.event_type, occurred_at: occurredAt };
         if (record.muted || !record.notify_on.includes(raw.event_type)) {
             this.save();
             return;
@@ -296,26 +322,41 @@ export class Manager {
             return;
         }
         const key = id();
+        const waiting = this.wait && WAITING.has(this.wait.state) && this.wait.monitor_ids.includes(monitorId) ? this.wait : undefined;
+        const monitorStart = Number.isFinite(record.registered_at) ? record.registered_at : null;
+        const waitStart = Number.isFinite(waiting?.started_at) ? waiting.started_at : monitorStart;
+        const timing = { wait_basis: Number.isFinite(waiting?.started_at) ? 'poll' : monitorStart !== null ? 'monitor' : 'unknown',
+            wait_started_at: waitStart, wait_elapsed_ms: waitStart === null ? null : Math.max(0, occurredAt - waitStart),
+            monitor_registered_at: monitorStart, monitor_elapsed_ms: monitorStart === null ? null : Math.max(0, occurredAt - monitorStart),
+            ...(Number.isFinite(waiting?.started_at) ? { wait_id: waiting.id, wait_mode: waiting.mode ?? 'pause' } : {}) };
         this.events[key] = { id: key, source_id: raw.event_id || null, sequence: ++this.sequence, monitor_id: monitorId,
-            event_type: raw.event_type, evidence: raw, occurred_at: now(), expires_at: now() + record.event_ttl_ms, state: 'pending' };
+            event_type: raw.event_type, evidence: raw, occurred_at: occurredAt, timing, expires_at: occurredAt + record.event_ttl_ms, state: 'pending' };
         this.save();
         this.requestFlush();
+        this.checkBlockingEvents();
     }
     requestFlush() { if (!this.flushTimer && !this.closed)
         this.flushTimer = setTimeout(() => { this.flushTimer = undefined; void this.flush(); }, 250); }
     expire(persist = true) {
         let changed = false;
         for (const event of Object.values(this.events))
-            if (['pending', 'submitted'].includes(event.state) && event.expires_at <= now()) {
+            if (['pending', 'submitted', 'returned'].includes(event.state) && event.expires_at <= now()) {
                 if (event.state === 'pending')
                     this.settleWaitFor(event.monitor_id, 'Selected event expired before delivery');
+                const returned = event.state === 'returned';
                 event.state = 'expired';
                 changed = true;
+                if (returned)
+                    this.requestFlush();
             }
         if (this.wait?.state === 'waiting' && this.wait.monitor_ids.every((key) => !this.jobs.has(key)) &&
             !Object.values(this.events).some(e => this.wait.monitor_ids.includes(e.monitor_id) && ['pending', 'sending'].includes(e.state))) {
-            this.wait.state = 'failed';
-            this.wait.error = 'Selected observers ended without a deliverable event; goal left unchanged';
+            if (this.blocker)
+                this.releaseBlocking('observers_ended');
+            else {
+                this.wait.state = 'failed';
+                this.wait.error = 'Selected observers ended without a deliverable event; goal left unchanged';
+            }
             changed = true;
         }
         if (changed && persist)
@@ -334,6 +375,7 @@ export class Manager {
             Object.assign(this.events[key], { state: 'acknowledged', resolution, acknowledged_at: now() });
         }
         this.save();
+        this.requestFlush();
         return { state: 'acknowledged', event_ids: params.event_ids };
     }
     async reviewEvent(raw) {
@@ -360,7 +402,14 @@ export class Manager {
             }) });
     }
     async beginWait(params) {
+        const cancellation = this.waitCancelRevision;
         return this.operations(async () => {
+            if (this.closed)
+                throw Error('Service is shutting down');
+            if (cancellation !== this.waitCancelRevision)
+                return { state: 'cancelled', goal_control: 'unchanged', reason: 'cancelled' };
+            if (this.blocker)
+                return { state: 'wait_active', goal_control: 'unchanged', reason: 'A blocking wait is already active; do not register a second wait.' };
             const scope = params.wake_scope ?? 'thread';
             if (!['thread', 'selected'].includes(scope))
                 throw Error('wake_scope must be thread or selected');
@@ -401,8 +450,8 @@ export class Manager {
                         if (waiting.state !== 'waiting')
                             return this.snapshot().wait;
                         if (!this.ownsPause(goal) || !sameGoal(waiting.goal, goal)) {
-                            this.endWait('cancelled', 'Goal pause ownership changed; automatic wake suppressed');
-                            return this.pausedGoalResult(goal);
+                            this.goalChanged(goal, 'Goal pause ownership changed; automatic wake suppressed');
+                            return waiting.state === 'released' ? this.snapshot().wait : this.pausedGoalResult(goal);
                         }
                         const ready = this.waitReadiness(selected);
                         if (ready)
@@ -423,6 +472,8 @@ export class Manager {
                 }
                 else {
                     const required = await this.requireGoalPause();
+                    if (cancellation !== this.waitCancelRevision)
+                        return this.snapshot().wait;
                     if (required) {
                         waiting.state = 'interrupted';
                         waiting.error = required.error.message;
@@ -434,6 +485,10 @@ export class Manager {
             }
             if (!authorization) {
                 const required = await this.requireGoalPause();
+                if (this.closed)
+                    throw Error('Service is shutting down');
+                if (cancellation !== this.waitCancelRevision)
+                    return { state: 'cancelled', goal_control: 'unchanged', reason: 'cancelled' };
                 if (required)
                     return required;
                 const ready = this.waitReadiness(selected);
@@ -443,6 +498,7 @@ export class Manager {
             const waiting = { id: id(), state: 'preparing', wake_scope: scope, requested_monitor_ids: requested,
                 monitor_ids: selected, guard_ids: selected.filter(key => this.guardedMonitor(key)), instructions, authorization, goal: null, goal_control: 'unchanged' };
             this.wait = waiting;
+            this.callbackHold = undefined;
             this.save();
             try {
                 if (authorization) {
@@ -473,8 +529,10 @@ export class Manager {
                     this.goalPause.authorization = authorization;
                     await this.confirmPauseBarrier(bridge, waiting);
                 }
-                if (waiting.state === 'preparing')
+                if (waiting.state === 'preparing') {
                     waiting.state = 'waiting';
+                    waiting.started_at = now();
+                }
             }
             catch (e) {
                 if (waiting.state === 'preparing')
@@ -487,6 +545,128 @@ export class Manager {
             this.requestFlush();
             return this.snapshot().wait;
         });
+    }
+    async blockWait(params, signal) {
+        const cancellation = this.waitCancelRevision;
+        const prepared = await this.operations(async () => {
+            if (this.closed)
+                throw Error('Service is shutting down');
+            if (cancellation !== this.waitCancelRevision)
+                return { state: 'cancelled', mode: 'blocking', goal_control: 'unchanged', reason: 'cancelled' };
+            const scope = params.wake_scope ?? 'thread';
+            if (!['thread', 'selected'].includes(scope))
+                throw Error('wake_scope must be thread or selected');
+            const requested = params.monitor_ids ?? [];
+            if (!Array.isArray(requested) || requested.some(key => typeof key !== 'string') || scope === 'selected' && !requested.length)
+                throw Error('Select monitor IDs');
+            const timeout = integer(params.timeout_ms ?? 3600000, 'timeout_ms', 100, 86400000);
+            const interval = integer(params.input_poll_ms ?? 250, 'input_poll_ms', 50, 5000);
+            const instructions = resumeInstructionsSchema.parse(params.resume_instructions) ?? DEFAULT_RESUME_INSTRUCTIONS;
+            if (this.wait && WAITING.has(this.wait.state))
+                return { state: 'wait_active', goal_control: 'unchanged',
+                    reason: 'An existing wait owns this thread. Inspect it before changing wait modes or registering another blocked call.' };
+            const selected = scope === 'thread' ? Object.keys(this.records).filter(key => this.liveMonitor(key)).sort() : [...new Set(requested)].sort();
+            this.expire();
+            const readiness = this.waitReadiness(selected);
+            if (readiness)
+                return readiness;
+            let wake, adopted = false;
+            let observer;
+            try {
+                observer = await watchInputHistory(this.historyFile, this.threadId, reason => {
+                    wake = reason;
+                    if (adopted)
+                        this.releaseBlocking(reason);
+                }, interval);
+            }
+            catch {
+                return { state: 'input_unavailable', goal_control: 'unchanged',
+                    reason: 'Readable CLI history.jsonl is required for input-aware blocking. Check CODEX_HOME and CLI history persistence, or explicitly use pause mode. No wait or goal mutation was registered.' };
+            }
+            try {
+                const bridge = await this.connect();
+                const config = await bridge.rpc('config/read', { includeLayers: false });
+                if (config.config?.history?.persistence === 'none')
+                    return { state: 'input_unavailable', goal_control: 'unchanged',
+                        reason: 'CLI history persistence is disabled. Enable history.persistence = "save-all" before input-aware blocking, or explicitly use pause mode. No wait or goal mutation was registered.' };
+                const goal = await this.currentGoal(bridge), goalUpdate = this.goalUpdate;
+                if (goal && (goal.status !== 'active' || !sameGoal(goal, goal)))
+                    return this.pausedGoalResult(goal);
+                const revision = this.activityRevision, goalRevision = this.goalActionRevision, turn = await latestTurn(bridge, this.threadId);
+                if (this.closed)
+                    return { state: 'interrupted', mode: 'blocking', goal_control: 'unchanged', reason: 'service_shutdown' };
+                if (cancellation !== this.waitCancelRevision)
+                    return { state: 'cancelled', mode: 'blocking', goal_control: 'unchanged', reason: 'cancelled' };
+                if (turn?.status !== 'inProgress')
+                    return { state: 'turn_unavailable', goal_control: 'unchanged', reason: 'Blocking requires the caller turn to remain in progress.' };
+                if (revision !== this.activityRevision || goalRevision !== this.goalActionRevision ||
+                    goalUpdate !== this.goalUpdate && !sameGoal(goal, this.goalUpdate?.goal ?? null))
+                    return { state: 'ready', goal_control: 'unchanged', reason: 'Thread or goal activity changed while preparing the wait; process the current input before waiting.' };
+                const ready = this.waitReadiness(selected);
+                if (ready)
+                    return ready;
+                if (wake || signal?.aborted)
+                    return { state: 'released', mode: 'blocking', goal_control: 'unchanged', reason: wake || 'client_disconnected' };
+                const startedAt = now();
+                const waiting = { id: id(), mode: 'blocking', state: 'waiting', turn_id: turn.id, started_at: startedAt,
+                    wake_scope: scope, requested_monitor_ids: requested, monitor_ids: selected,
+                    guard_ids: selected.filter(key => this.guardedMonitor(key)), instructions,
+                    goal: null, observed_goal: goal, goal_control: 'unchanged', deadline: startedAt + timeout, input_poll_ms: interval };
+                let resolve;
+                const pending = new Promise(done => { resolve = done; });
+                const abort = () => this.releaseBlocking('client_disconnected');
+                const timer = setTimeout(() => this.releaseBlocking('timeout'), timeout);
+                this.blocker = { wait: waiting, resolve, cleanup: () => { clearTimeout(timer); observer.close(); signal?.removeEventListener('abort', abort); } };
+                this.wait = waiting;
+                this.callbackHold = undefined;
+                adopted = true;
+                signal?.addEventListener('abort', abort, { once: true });
+                this.save();
+                this.checkBlockingEvents();
+                return { pending };
+            }
+            finally {
+                if (!adopted)
+                    observer.close();
+            }
+        });
+        return prepared.pending ? await prepared.pending : prepared;
+    }
+    checkBlockingEvents() {
+        if (this.blocker && Object.values(this.events).some(e => e.state === 'pending' && e.expires_at > now() &&
+            this.blocker.wait.monitor_ids.includes(e.monitor_id) && !this.records[e.monitor_id]?.muted))
+            this.releaseBlocking('monitor_event');
+    }
+    releaseBlocking(reason) {
+        const block = this.blocker;
+        if (!block)
+            return;
+        this.blocker = undefined;
+        block.cleanup();
+        const events = reason === 'monitor_event' ? Object.values(this.events).filter(e => e.state === 'pending' && e.expires_at > now() &&
+            block.wait.monitor_ids.includes(e.monitor_id) && !this.records[e.monitor_id]?.muted).slice(0, 8) : [];
+        for (const event of events)
+            Object.assign(event, { state: 'returned', returned_at: now(), returned_turn: block.wait.turn_id, processing: 'unconfirmed' });
+        const releasedAt = now();
+        Object.assign(block.wait, { state: reason === 'timeout' ? 'timed_out' : 'released', reason, goal_control: 'unchanged',
+            released_at: releasedAt, elapsed_ms: Math.max(0, releasedAt - block.wait.started_at) });
+        // Lost transports must not fall through into automatic callback submission.
+        // Observers keep running, but their notifications require explicit reconciliation.
+        if (['client_disconnected', 'host_disconnected', 'turn_failed'].includes(reason)) {
+            this.callbackHold = `${reason}; reconcile events and attach a new wait before callbacks resume`;
+            Object.assign(block.wait, { state: 'interrupted', reason, error: this.callbackHold });
+        }
+        else if (reason === 'cancelled')
+            this.endWait('cancelled', 'Wait cancelled; selected notifications muted; goal left unchanged');
+        else if (reason === 'turn_ended')
+            this.endWait('interrupted', 'Turn ended; inspect before rearming');
+        else if (reason === 'goal_changed')
+            this.endWait('cancelled', 'Goal changed; selected notifications muted; goal left unchanged');
+        this.save();
+        block.resolve(structuredClone({ ...this.snapshot().wait, event_ids: events.map(e => e.id), events: events.map(e => ({ ...e,
+                name: this.records[e.monitor_id]?.name, instructions: this.records[e.monitor_id]?.instructions })) }));
+        if (reason === 'monitor_event')
+            this.requestFlush();
     }
     liveMonitor(key) {
         const record = Object.hasOwn(this.records, key) ? this.records[key] : undefined;
@@ -501,12 +681,12 @@ export class Manager {
     waitReadiness(selected) {
         const pending = Object.values(this.events).filter(e => !['acknowledged', 'expired', 'superseded', 'suppressed'].includes(e.state));
         if (pending.length)
-            return { state: 'ready', reason: 'Handle or reconcile existing monitor events before pausing the goal', event_ids: pending.slice(0, 8).map(e => e.id) };
+            return { state: 'ready', reason: 'Handle or reconcile existing monitor events before waiting', event_ids: pending.slice(0, 8).map(e => e.id) };
         if (!selected.length || selected.some(key => !this.liveMonitor(key)))
             return { state: 'ready', reason: 'No verified live monitor is available for waiting' };
         if (selected.some(key => !this.guardedMonitor(key)))
             return { state: 'guard_required', goal_control: 'unchanged',
-                error: { code: 'MONITOR_GUARD_REQUIRED', message: 'Each live wait source must notify on monitor_error and monitor_expired with a finite deadline. Establish the missing watchdog/fallback notifications before pausing; training also needs meaningful PID/progress/GPU health monitoring.' },
+                error: { code: 'MONITOR_GUARD_REQUIRED', message: 'Each live wait source must notify on monitor_error and monitor_expired with a finite deadline. Establish the missing watchdog/fallback notifications before waiting; training also needs meaningful PID/progress/GPU health monitoring.' },
                 monitor_ids: selected.filter(key => !this.guardedMonitor(key)) };
         return null;
     }
@@ -515,14 +695,17 @@ export class Manager {
         await loaded(bridge, this.threadId);
         const goal = await this.currentGoal(bridge);
         return goal?.status === 'active' ? { state: 'goal_pause_required', goal_control: 'unchanged',
-            error: { code: 'GOAL_PAUSE_AUTHORIZATION_REQUIRED', message: 'Goal is still active. Reuse the user\'s existing instruction to pause while waiting and resume on an event as goal_authorization, then call monitor_wait again. If no such instruction exists, ask once. No new wait was registered; do not report the goal as paused or start a polling loop.' } } : null;
+            error: { code: 'GOAL_PAUSE_AUTHORIZATION_REQUIRED', message: 'Goal is still active. Reuse the user\'s existing instruction to pause while waiting and resume on an event as goal_authorization, then call poll again. If no such instruction exists, ask once. No new wait was registered; do not report the goal as paused or start a polling loop.' } } : null;
     }
     async cancelWait() {
-        if (this.wait) {
+        this.waitCancelRevision++;
+        if (this.blocker)
+            this.releaseBlocking('cancelled');
+        else if (this.wait) {
             this.endWait('cancelled', 'Wait cancelled; selected notifications muted; goal left unchanged');
             this.save();
         }
-        return { state: 'cancelled', goal: 'Left unchanged', notifications: 'Selected monitors muted' };
+        return { state: 'cancelled', target: 'wait', goal: 'Left unchanged', notifications: 'Selected monitors muted' };
     }
     endWait(state, reason) {
         if (!this.wait)
@@ -542,6 +725,27 @@ export class Manager {
                 if (event.monitor_id === key && event.state === 'pending')
                     event.state = 'suppressed';
         }
+    }
+    goalChanged(goal, reason) {
+        const waiting = this.wait;
+        // A user resuming the same goal takes over continuation, not observation.
+        // Drop the pause lease without muting healthy sources or discarding evidence.
+        // Never revive a cancelled/interrupted wait, an edited goal or a spent budget.
+        if (waiting?.goal?.status === 'paused' && WAITING.has(waiting.state) && goal?.status === 'active' &&
+            sameGoal({ ...waiting.goal, status: 'active', updatedAt: goal.updatedAt }, goal)) {
+            waiting.state = 'released';
+            waiting.goal_control = 'unchanged';
+            waiting.reason = 'Goal resumed; monitors remain active';
+            delete waiting.error;
+            delete waiting.authorization;
+            delete waiting.pause_barrier;
+            this.goalPause = { owner: 'none', checked_at: now() };
+            for (const event of Object.values(this.events))
+                delete event.deferred_reason;
+            this.requestFlush();
+        }
+        else
+            this.endWait('cancelled', reason);
     }
     ownsPause(goal) {
         return this.goalPause.owner === 'plugin' && goal?.status === 'paused' && sameGoal(this.goalPause.goal, goal);
@@ -598,7 +802,7 @@ export class Manager {
         if (this.wait !== waiting || !['preparing', 'waiting'].includes(waiting.state))
             return false;
         if (!this.ownsPause(goal) || !sameGoal(waiting.goal, goal)) {
-            this.endWait('cancelled', 'Goal changed during pause confirmation; automatic wake suppressed');
+            this.goalChanged(goal, 'Goal changed during pause confirmation; automatic wake suppressed');
             return false;
         }
         const activity = revision === this.activityRevision ? meta.thread?.status?.type : this.activityStatus || 'active';
@@ -659,6 +863,16 @@ export class Manager {
     async flush() {
         if (this.sending || this.closed)
             return;
+        if (this.callbackHold)
+            return;
+        if (this.blocker) {
+            this.checkBlockingEvents();
+            return;
+        }
+        // The caller is still reconciling evidence handed back by its blocked tool.
+        // Do not race that result with a separate callback for a burst of events.
+        if (Object.values(this.events).some(e => e.state === 'returned' && e.expires_at > now()))
+            return;
         if (this.wait?.state === 'preparing')
             return;
         this.sending = true;
@@ -680,7 +894,7 @@ export class Manager {
             if (waiting && (waiting !== this.wait || waiting.state !== 'waiting'))
                 return;
             if (waiting?.goal && (!this.ownsPause(goal) || !sameGoal(waiting.goal, goal))) {
-                this.endWait('cancelled', 'Goal changed; selected notifications muted');
+                this.goalChanged(goal, 'Goal changed; selected notifications muted');
                 waiting = null;
             }
             if (waiting && waiting.state !== 'waiting')
@@ -758,9 +972,45 @@ export class Manager {
                 this.requestFlush();
         }
     }
-    async configureRecovery(params) { return this.recovery.configure(params); }
+    async activateDefaults() {
+        if (this.defaultRecoveryTask)
+            return this.defaultRecoveryTask;
+        if (this.defaultsHandled || this.closed)
+            return;
+        this.defaultsHandled = true;
+        this.save();
+        this.defaultRecoveryTask = (async () => {
+            try {
+                const file = path.join(path.dirname(this.directory), 'settings.json');
+                const settings = existsSync(file) ? readJson(file) : {};
+                if (settings.recovery_enabled === false)
+                    return;
+                if (settings.recovery_enabled !== undefined && settings.recovery_enabled !== true)
+                    throw Error('Invalid installation recovery_enabled setting');
+                await this.recovery.configure({ enabled: true, retry_mode: 'all_failed',
+                    authorization: 'Installation default: retry abnormal failed turns every 300 seconds for at most 3 hours; never retry manual interruption.' });
+            }
+            catch (e) {
+                Object.assign(this.recovery.state, { enabled: false, state: 'default_unavailable', reason: bounded(e) });
+            }
+            finally {
+                this.save();
+            }
+        })().finally(() => { this.defaultRecoveryTask = undefined; });
+        return this.defaultRecoveryTask;
+    }
+    async configureRecovery(params) {
+        this.defaultsHandled = true;
+        if (params.enabled !== false)
+            await this.defaultRecoveryTask;
+        const result = await this.recovery.configure(params);
+        this.save();
+        return result;
+    }
     isIdle() { return !this.jobs.size && !this.sending && !this.recovery.state.enabled && !['waiting', 'waking', 'preparing'].includes(this.wait?.state || '') && !Object.values(this.events).some(e => ['pending', 'sending'].includes(e.state)); }
     async close() {
+        if (this.blocker)
+            this.releaseBlocking('host_disconnected');
         this.closed = true;
         this.changes.close();
         clearTimeout(this.flushTimer);

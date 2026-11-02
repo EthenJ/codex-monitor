@@ -33,6 +33,12 @@ export async function collect(ask, initial = {}) {
       ['yes', 'no'],
       result.bootstrap ? 'yes' : 'no',
     )) === 'yes';
+  result.recovery =
+    (await choose(
+      'Default automatic recovery: retry abnormal failures every 300s for up to 3h; never manual interruption: yes / no',
+      ['yes', 'no'],
+      result.recovery ? 'yes' : 'no',
+    )) === 'yes';
   return settings(result);
 }
 export async function main(args = process.argv.slice(2)) {
@@ -47,7 +53,7 @@ export async function main(args = process.argv.slice(2)) {
     else if (args[i] === '--yes') yes = true;
     else if (args[i] === '--help') {
       console.log(
-        'node install.mjs [--dry-run] [--config answers.json --yes]\nInteractive by default. --dry-run previews without installing or changing plugin preferences.\nConfiguration: codex_home, client (cli/desktop/both), display (compact/verbose), hooks, bootstrap, replace.\nAgent-assisted: collect user choices, preview --config FILE --dry-run, then apply --config FILE --yes.',
+        'node install.mjs [--dry-run] [--config answers.json --yes]\nInteractive by default. --dry-run previews without installing or changing plugin preferences.\nConfiguration: codex_home, client (cli/desktop/both), display (compact/verbose), hooks, bootstrap, recovery, replace.\nAgent-assisted: collect user choices, preview --config FILE --dry-run, then apply --config FILE --yes.',
       );
       return;
     } else throw Error(`Unknown argument: ${args[i]}`);
@@ -79,7 +85,7 @@ export async function main(args = process.argv.slice(2)) {
       );
     console.log(
       [
-        '\nInstallation plan · codex-monitor v0.2.4',
+        '\nInstallation plan · codex-monitor v0.3.0',
         `  Codex directory: ${config.codex_home}`,
         `  Monitor state:   ${stateDirectory(config)}`,
         `  Client:          ${config.client}`,
@@ -89,7 +95,7 @@ export async function main(args = process.argv.slice(2)) {
         `  Existing plugin: ${detected.old?.version || (detected.market ? 'marketplace only' : 'none')}`,
         `  Replace:         ${config.replace ? 'yes, codex-monitor only' : 'no'}`,
         `  Source build:    ${detected.source ? 'npm ci and TypeScript build in this checkout' : 'use included JavaScript'}`,
-        '  Auto-recovery:   not enabled',
+        `  Auto-recovery:   ${config.recovery ? 'on at first monitor/wait use; fixed 300s, 3h incident limit' : 'off for new threads'}`,
       ].join('\n'),
     );
     console.log(
