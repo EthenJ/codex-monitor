@@ -33,19 +33,21 @@ async function fixture(t) {
 }
 
 test('wizard collects choices and rejects invalid settings before execution', async () => {
-  const answers = ['', 'invalid', 'both', 'verbose', 'no', 'no'];
+  const answers = ['', 'invalid', 'both', 'verbose', 'no', 'no', ''];
   const value = await collect(async () => answers.shift());
   assert.equal(value.client, 'both');
   assert.equal(value.display, 'verbose');
   assert.equal(value.hooks, false);
   assert.equal(value.bootstrap, false);
   assert.equal(value.replace, false);
+  assert.equal(value.recovery, true);
+  assert.equal(settings({recovery:false}).recovery,false);
   for (const raw of [
     { hooks: 'yes' },
     { display: 'hidden' },
     { replace: 1 },
     { codex_home: '\0' },
-    { recovery: true },
+    { recovery: 'yes' },
     [],
   ])
     assert.throws(() => settings(raw));

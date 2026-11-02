@@ -84,7 +84,8 @@ test('registration reuse, native file result, structured native delivery and ack
   assert.equal(first.state, 'armed'); assert.equal((await f.start({ max_events: 1 })).id, first.id);
   await writeFile(path.join(f.work, 'metrics'), 'done');
   await eventually(() => f.host.submissions.length === 1);
-  const submission = f.host.submissions[0]; assert.deepEqual(submission.input, []); assert.equal(submission.toolOutput.name, 'monitor_event');
+  const submission = f.host.submissions[0]; assert.deepEqual(submission.input, []); assert.equal(submission.toolOutput.name, 'event');
+  assert.equal(submission.toolOutput.namespace, 'monitor');
   const event = Object.values(f.manager.events)[0]; assert.equal(event.state, 'submitted');
   await f.manager.acknowledge({ event_ids: [event.id], resolution: 'Inspected artifact' });
   assert.equal(event.state, 'acknowledged'); assert.equal(f.manager.jobs.size, 0);
@@ -99,10 +100,10 @@ test('acknowledgement before dispatch suppresses stale event', async t => {
 test('callback presentation switches without restarting the observer or changing event delivery',async t=>{
   const {manager,host,start}=await fixture(t),r=await start();
   manager.event(r.id,{event_type:'file_change',path:'first'});await manager.flush();
-  assert.match(host.submissions[0].toolOutput.output,/Compact display: call monitor_event/);
+  assert.match(host.submissions[0].toolOutput.output,/Compact display: call monitor\.event/);
   displaySettings(manager.threadId,'verbose',path.dirname(manager.directory));
   manager.event(r.id,{event_type:'file_change',path:'second'});await manager.flush();
-  assert.match(host.submissions[1].toolOutput.output,/Verbose display: read monitor_status/);
+  assert.match(host.submissions[1].toolOutput.output,/Verbose display: read monitor\.event/);
   assert.equal(manager.records[r.id].state,'armed');assert.equal(host.submissions.length,2);
 });
 test('event deduplication, supersession and expiration', async t => {
@@ -478,6 +479,53 @@ test('goal edit mutes subsequent selected events but preserves unrelated callbac
   assert.equal(manager.wait.state,'cancelled');assert.equal(manager.records[m.id].muted,true);
   assert.equal(host.submissions.length,1);assert.ok(host.submissions[0].toolOutput.output.includes(other.id));
   assert.ok(!host.submissions[0].toolOutput.output.includes(m.id));
+});
+
+test('manual resume releases the wait while keeping all live observers and queued evidence', async t => {
+  const {manager,host,start,work}=await fixture(t), m=await start();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Inspect other result'});
+  host.status='active';host.turn.status='inProgress';
+  await manager.beginWait({goal_authorization:'Pause while waiting and resume on an event'});
+  manager.event(m.id,{event_type:'file_change',path:'metrics'});await manager.flush();
+  const queued=Object.values(manager.events)[0];assert.equal(queued.state,'pending');assert.ok(queued.deferred_reason);
+  host.goal.status='active';host.goal.updatedAt++;
+  host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});
+  assert.equal(manager.wait.state,'released');assert.equal(manager.wait.goal_control,'unchanged');
+  assert.equal(manager.wait.authorization,undefined);assert.equal(manager.snapshot().goal_pause.owner,'none');
+  assert.equal(manager.jobs.size,2);assert.equal(manager.records[m.id].state,'armed');
+  for(const record of Object.values(manager.records))assert.ok(!record.muted);
+  assert.equal(queued.state,'pending');assert.equal(queued.deferred_reason,undefined);
+  await manager.flush();assert.equal(queued.state,'submitted');
+  manager.event(other.id,{event_type:'file_change',path:'other'});await manager.flush();
+  assert.equal(host.submissions.length,2);assert.equal(host.changes.length,1,'Only the original plugin pause may mutate the goal');
+  assert.equal(host.goal.status,'active');
+});
+
+test('a resumed goal snapshot also releases an old wait if the notification was missed',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();
+  await manager.beginWait({goal_authorization:'Pause while waiting and resume on an event'});
+  host.goal.status='active';host.goal.updatedAt++;
+  manager.event(m.id,{event_type:'file_change',path:'completed'});await manager.flush();
+  assert.equal(manager.wait.state,'released');assert.ok(!manager.records[m.id].muted);
+  assert.equal(Object.values(manager.events)[0].state,'submitted');assert.equal(host.changes.length,1);
+});
+
+test('refreshing after an unnoticed manual resume releases the old wait without another goal mutation',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();
+  await manager.beginWait({goal_authorization:'Pause while waiting and resume on an event'});
+  host.goal.status='active';host.goal.updatedAt++;
+  const result=await manager.beginWait({});
+  assert.equal(result.state,'released');assert.equal(host.changes.length,1);assert.ok(!manager.records[m.id].muted);
+  assert.equal((await manager.beginWait({})).state,'goal_pause_required','Released waits must not retain pause authorization');
+});
+
+test('resuming after explicit cancellation cannot silently rearm muted observers',async t=>{
+  const {manager,host,start}=await fixture(t),m=await start();
+  await manager.beginWait({goal_authorization:'Pause while waiting and resume on an event'});
+  await manager.cancelWait();
+  host.goal.status='active';host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});
+  assert.equal(manager.wait.state,'cancelled');assert.equal(manager.records[m.id].muted,true);
+  manager.event(m.id,{event_type:'file_change'});await manager.flush();assert.equal(host.submissions.length,0);
 });
 
 test('disconnected goal wait never falls through into an ordinary wake without goal restoration', async t => {
@@ -875,6 +923,39 @@ test('disabling recovery while configuration is in flight stays disabled', async
   const configuring = recovery.configure({ enabled: true, authorization: 'Fixture authorization' });
   await reached.promise; await recovery.configure({ enabled: false }); blocked.release(); await configuring;
   assert.equal(recovery.state.enabled, false); assert.equal(recovery.state.state, 'disabled');
+});
+
+test('a late recovery setup failure preserves a newer opt-out',async t=>{
+  const host=new Host(),blocked=gate(),reached=gate();host.thread=randomUUID();
+  const recovery=new Recovery(host.thread,async()=>{reached.release();await blocked.promise;throw Error('Late host failure');},()=>{},()=>false);
+  t.after(()=>recovery.close());const configuring=recovery.configure({enabled:true,authorization:'Fixture authorization'});
+  await reached.promise;await recovery.configure({enabled:false});blocked.release();await configuring;
+  assert.equal(recovery.state.enabled,false);assert.equal(recovery.state.state,'disabled');
+});
+
+for(const method of ['turn/completed','thread/goal/updated','thread/goal/cleared','thread/archived'])
+test(`manual ${method} during recovery configuration prevents late enable`,async t=>{
+  const host=new Host(),blocked=gate(),reached=gate();host.thread=randomUUID();
+  const recovery=new Recovery(host.thread,async()=>host,()=>{},()=>false);t.after(()=>recovery.close());
+  const rpc=host.rpc.bind(host);host.rpc=async(method,params)=>{
+    if(method==='thread/turns/list'){const stale=await rpc(method,params);reached.release();await blocked.promise;return stale;}
+    return rpc(method,params);
+  };
+  const configuring=recovery.configure({enabled:true,authorization:'Fixture authorization'});await reached.promise;
+  recovery.notice(method,{threadId:host.thread,turn:{status:'interrupted'},goal:{...host.goal,status:'paused'}});
+  blocked.release();await configuring;
+  assert.equal(recovery.state.enabled,false);assert.equal(recovery.state.state,'cancelled');
+});
+
+test('cancelling a notification wait during host verification prevents late registration',async t=>{
+  const {manager,host,start}=await fixture(t);await start();host.goal=null;
+  const blocked=gate(),reached=gate(),rpc=host.rpc.bind(host);
+  host.rpc=async(method,params)=>{
+    if(method==='thread/goal/get'){const result=await rpc(method,params);reached.release();await blocked.promise;return result;}
+    return rpc(method,params);
+  };
+  const pending=manager.beginWait({});await reached.promise;await manager.cancelWait();blocked.release();
+  assert.equal((await pending).state,'cancelled');assert.equal(manager.wait,null);assert.equal(manager.jobs.size,1);
 });
 
 test('interruption during native recovery submission retains cancelled state', async t => {

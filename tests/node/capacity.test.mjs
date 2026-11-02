@@ -24,7 +24,7 @@ test('capacity thresholds count reserved live slots, reuse at full and release o
   assert.equal(records.at(-1).capacity.state, 'normal');
   const warned = await manager.start(config(23)); records.push(warned);
   assert.deepEqual(warned.capacity, monitorCapacity(24));
-  assert.match(toolResult('monitor_start', warned).content[0].text, /24\/32 slots.*overlapping monitors/);
+  assert.match(toolResult('start', warned).content[0].text, /24\/32 slots.*overlapping monitors/);
   const attempts = await Promise.allSettled(Array.from({ length: 10 }, (_, i) => manager.start(config(i + 24))));
   records.push(...attempts.filter(x => x.status === 'fulfilled').map(x => x.value));
   assert.equal(records.length, 32); assert.equal(manager.jobs.size, 32);
@@ -65,42 +65,42 @@ test('MCP preserves actionable capacity errors and exposes active-only readable 
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.resolve('codex-monitor/runtime/server.js')], env: { ...process.env, CODEX_MONITOR_HOME: root } }));
   const call = (name, args = {}) => client.callTool({ name, arguments: { thread_id: thread, ...args } });
   const tools = (await client.listTools()).tools;
-  assert.ok(!tools.find(x => x.name === 'monitor_wait').inputSchema.required.includes('resume_instructions'));
-  assert.deepEqual(tools.find(x => x.name === 'monitor_report').inputSchema.properties.details.enum, ['summary', 'active']);
+  assert.ok(!tools.find(x => x.name === 'poll').inputSchema.required.includes('resume_instructions'));
+  assert.deepEqual(tools.find(x => x.name === 'status').inputSchema.properties.details.enum, ['summary', 'active', 'full']);
   for (let i = 0; i < 32; i++) {
-    const started = await call('monitor_start', { name: `live-${i}`, options: { cwd: work, watch_file: 'metrics', timeout_ms: 60000 }, instructions: 'Inspect' });
+    const started = await call('start', { name: `live-${i}`, options: { cwd: work, watch_file: 'metrics', timeout_ms: 60000 }, instructions: 'Inspect' });
     assert.equal(started.isError, undefined); ids.push(started.structuredContent.id);
     if (i === 23) assert.match(started.content[0].text, /24\/32 slots/);
   }
-  const rejected = await call('monitor_start', { name: 'overflow', options: { cwd: work, watch_file: 'other' }, instructions: 'Inspect' });
+  const rejected = await call('start', { name: 'overflow', options: { cwd: work, watch_file: 'other' }, instructions: 'Inspect' });
   assert.equal(rejected.isError, true); assert.equal(rejected.structuredContent.error.code, CAPACITY_ERROR);
   assert.equal(rejected.structuredContent.capacity.used, 32);
   assert.match(rejected.content[0].text, /limit reached \(32\/32\).*consolidate/);
   assert.match(rejected.structuredContent.guidance.join(' '), /Stopping an owned command kills/);
-  const filtered = await call('monitor_status', { monitor_id: ids[0] });
+  const filtered = await call('status', { monitor_id: ids[0] });
   assert.equal(filtered.structuredContent.capacity.used, 32);
-  await call('monitor_stop', { monitor_id: ids[0] });
-  const summary = await call('monitor_report');
+  await call('stop', { monitor_id: ids[0] });
+  const summary = await call('status');
   assert.equal(summary.content[0].text.split('\n').length, 1);
-  const details = await call('monitor_report', { details: 'active' });
+  const details = await call('status', { details: 'active' });
   assert.equal(details.content[0].text.split('\n').length, 32);
   assert.ok(!details.content[0].text.includes('live-0 ·'));
   assert.ok(details.content[0].text.includes(ids[1]));
   assert.match(details.content[0].text, /live-1 · running · watchdog/);
-  await call('monitor_display', { mode: 'verbose' });
-  assert.match((await call('monitor_report')).content[0].text, /live-1 · running/);
-  assert.equal((await call('monitor_report', { details: 'summary' })).content[0].text.split('\n').length, 1);
+  await call('display', { mode: 'verbose' });
+  assert.match((await call('status')).content[0].text, /live-1 · running/);
+  assert.equal((await call('status', { details: 'summary' })).content[0].text.split('\n').length, 1);
 });
 
 test('active details sanitize labels, bound output and never present saved observers as running', () => {
   const monitors = [{ id: 'live-id', name: '\u001b[31m<private>\u202e\n', kind: 'watchdog', state: 'armed', muted: true },
     { id: 'old-id', name: 'obsolete-monitor', state: 'stopped' }];
   const data = { ...summarize({ monitors }, 'live'), details: 'active' };
-  const text = toolResult('monitor_report', data).content[0].text;
+  const text = toolResult('status', data).content[0].text;
   assert.ok(!/[\u001b\u202e<>]/.test(text)); assert.ok(!text.includes('obsolete-monitor'));
   assert.match(text, /notifications muted/); assert.match(text, /live-id/);
-  assert.equal(toolResult('monitor_report', { ...summarize({ monitors }, 'saved'), details: 'active' }).content[0].text, 'Monitor · live status unavailable');
+  assert.equal(toolResult('status', { ...summarize({ monitors }, 'saved'), details: 'active' }).content[0].text, 'Monitor · live status unavailable');
   const many = Array.from({ length: 40 }, (_, i) => ({ id: String(i), name: 'active', state: 'armed', kind: 'command' }));
-  const bounded = toolResult('monitor_report', { ...summarize({ monitors: many }, 'live'), details: 'active' }).content[0].text;
+  const bounded = toolResult('status', { ...summarize({ monitors: many }, 'live'), details: 'active' }).content[0].text;
   assert.match(bounded, /\+8 more active monitors/);
 });

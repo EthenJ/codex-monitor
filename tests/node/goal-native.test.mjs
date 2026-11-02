@@ -130,6 +130,21 @@ test('native manual pause holds callbacks and resume releases them without chang
   await f.interrupt(wake.turn);
 });
 
+test('native manual resume of a plugin-paused goal preserves observers and later delivery',native,async t=>{
+  const f=await fixture(t),original=await f.startTurn();await f.wait();await original.finish();
+  await changed(f.manager,()=>f.manager.wait.pause_barrier==='ready');
+  const started=notice(f.bridge,'turn/started',p=>p.turn.id!==original.turn.id);
+  await f.bridge.rpc('thread/goal/set',{threadId:f.thread,status:'active',origin:'user'});
+  const active=await started;
+  assert.equal(f.manager.wait.state,'released');assert.equal(f.manager.wait.goal_control,'unchanged');
+  assert.equal(f.manager.jobs.size,1);assert.equal(f.manager.records[f.monitor.id].state,'armed');
+  assert.ok(!f.manager.records[f.monitor.id].muted);assert.equal((await getGoal(f.bridge,f.thread)).status,'active');
+  f.manager.event(f.monitor.id,{event_type:'process_exit',returncode:0});await f.manager.flush();
+  const event=Object.values(f.manager.events)[0];assert.equal(event.state,'submitted');
+  assert.equal(event.submitted_turn,active.turn.id,'Result steers the resumed turn instead of restoring the goal again');
+  assert.equal(f.manager.wait.state,'released');await f.interrupt(active.turn);
+});
+
 test('native manual interruption cancels a waiting goal without an event-driven restart', native, async t => {
   const f = await fixture(t), original = await f.startTurn(); await f.wait();
   await f.interrupt(original.turn);

@@ -130,5 +130,5 @@ export async function latestTurn(bridge: BridgeLike, threadId: string) {
 export async function submit(bridge: BridgeLike, threadId: string, payload: Json, rootTurnId?: string) {
   await loaded(bridge, threadId);
   return bridge.rpc('turn/start', { threadId, input: [], ...(rootTurnId ? { rootTurnId } : {}),
-    toolOutput: { name: 'monitor_event', namespace: 'codex_monitor', output: eventText(payload), retain: true } });
+    toolOutput: { name: 'event', namespace: 'monitor', output: eventText(payload), retain: true } });
 }

@@ -29,17 +29,17 @@ test('MCP disconnect/reconnect retains observer and launcher identity', { timeou
   try {
     const broker = await ensureBroker(state), original = await rpc(broker, 'status');
     assert.equal(await ensureBroker(state), broker); assert.equal((await rpc(broker, 'status')).service_pid, original.service_pid);
-    await open(); const tools = await client.listTools(); assert.equal(tools.tools.length, 11);
-    const recoverySchema = tools.tools.find(x => x.name === 'monitor_recovery').inputSchema;
+    await open(); const tools = await client.listTools(); assert.equal(tools.tools.length, 8);
+    const recoverySchema = tools.tools.find(x => x.name === 'recovery').inputSchema;
     assert.deepEqual(recoverySchema.properties.retry_mode.enum, ['transient', 'all_failed']);
     assert.ok(recoverySchema.properties.retry_interval_ms); assert.ok(recoverySchema.properties.max_elapsed_ms);
-    const result = await client.callTool({ name: 'monitor_start', arguments: { thread_id: thread, name: 'survival', kind: 'watchdog',
+    const result = await client.callTool({ name: 'start', arguments: { thread_id: thread, name: 'survival', kind: 'watchdog',
       options: { cwd: root, watch_file: path.join(root, 'metrics'), timeout_ms: 15000 }, instructions: 'Fixture', notify_on: ['monitor_expired'] } });
     assert.equal(result.isError, undefined, JSON.stringify(result)); const monitor = result.structuredContent; assert.equal(monitor.state, 'armed');
     await client.close(); await open();
-    const status = await client.callTool({ name: 'monitor_status', arguments: { thread_id: thread } });
+    const status = await client.callTool({ name: 'status', arguments: { thread_id: thread } });
     assert.equal(status.structuredContent.monitors[0].id, monitor.id); assert.equal(status.structuredContent.monitors[0].state, 'armed');
-    const stop = await client.callTool({ name: 'monitor_stop', arguments: { thread_id: thread, monitor_id: monitor.id } });
+    const stop = await client.callTool({ name: 'stop', arguments: { thread_id: thread, monitor_id: monitor.id } });
     assert.equal(stop.structuredContent.state, 'stopped');
     await client.close(); client = undefined;
     await rpc(directory, 'shutdown'); await rpc(broker, 'shutdown');

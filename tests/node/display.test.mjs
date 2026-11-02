@@ -17,7 +17,7 @@ import { ensureBroker, rpc } from '../../codex-monitor/runtime/service.js';
 
 async function setup(t) {
   const root=await mkdtemp(path.join(tmpdir(),'monitor-display-')),thread=randomUUID(),dir=path.join(root,thread);
-  const cleanup=[];t.after(async()=>{for(const f of cleanup)await f();await rm(root,{recursive:true,force:true});});return{root,thread,dir,cleanup};
+  const cleanup=[];t.after(async()=>{for(const f of cleanup)await f();await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});});return{root,thread,dir,cleanup};
 }
 test('display mode is thread-scoped, defaults compact and never starts supervision',async t=>{
   const {root,thread,dir}=await setup(t),other=randomUUID();
@@ -75,13 +75,13 @@ test('expired callbacks remain expired and unknown IDs never acknowledge a valid
 test('trigger cards show failures and progress, keep evidence structured, and add verbose details',()=>{
   const event={id:randomUUID(),monitor_id:randomUUID(),name:'job\u001b\u202e<img>',event_type:'command_exit',evidence:{returncode:7,private:'SECRET'},instructions:'SECRET',state:'submitted',actionable:true};
   const report=summarize({monitors:[],events:[event]},'live'),data={events:[event],report};
-  const compact=toolResult('monitor_event',data,false,report),verbose=toolResult('monitor_event',data,false,report,'verbose');
+  const compact=toolResult('event',data,false,report),verbose=toolResult('event',data,false,report,'verbose');
   assert.match(compact.content[0].text,/Monitor event/);assert.match(compact.content[0].text,/! command finished · exit 7 · needs review/);
   assert.match(compact.content[0].text,/none running/);assert.ok(!compact.content[0].text.includes(event.id));
   assert.ok(!/SECRET|[\u001b\u202e<>]/.test(compact.content[0].text));assert.ok(verbose.content[0].text.includes(event.id));
   assert.equal(compact.structuredContent,data);assert.equal(compact.content.length,1);
   const callback={type:'monitor_events',events:[{...event,event_id:event.id}]};
-  assert.match(eventText(callback),/Compact display: call monitor_event/);assert.match(eventText({...callback,display_mode:'verbose'}),/Verbose display: read monitor_status/);
+  assert.match(eventText(callback),/Compact display: call monitor\.event/);assert.match(eventText({...callback,display_mode:'verbose'}),/Verbose display: read monitor\.event/);
   assert.ok(!eventText(callback).includes('SECRET'));
 });
 test('MCP event acknowledgement carries the final report; display changes need no service restart', {timeout:20000},async t=>{
@@ -90,26 +90,26 @@ test('MCP event acknowledgement carries the final report; display changes need n
   try {
     await client.connect(new StdioClientTransport({command:process.execPath,args:[path.resolve('codex-monitor/runtime/server.js')],env:{...process.env,CODEX_MONITOR_HOME:root}}));
     const call=(name,args={})=>client.callTool({name,arguments:{thread_id:thread,...args}});
-    assert.equal((await call('monitor_display')).structuredContent.mode,'compact');assert.equal(existsSync(path.join(dir,'endpoint.json')),false);
-    const started=await call('monitor_start',{name:'compact-test',options:{cwd:work,watch_file:'metrics',timeout_ms:10000},instructions:'Check progress',notify_on:['monitor_expired']});
+    assert.equal((await call('display')).structuredContent.mode,'compact');assert.equal(existsSync(path.join(dir,'endpoint.json')),false);
+    const started=await call('start',{name:'compact-test',options:{cwd:work,watch_file:'metrics',timeout_ms:10000},instructions:'Check progress',notify_on:['monitor_expired']});
     assert.equal(started.structuredContent.report.summary.running,1);assert.equal(started.content[0].text.split('\n').length,1);
     const pid=(await rpc(dir,'status')).service_pid;
-    await call('monitor_display',{mode:'verbose'});
-    assert.match((await call('monitor_status')).content[0].text,/compact-test · running/);
+    await call('display',{mode:'verbose'});
+    assert.match((await call('status')).content[0].text,/compact-test · running/);
     assert.equal((await rpc(dir,'status')).service_pid,pid);
-    await call('monitor_display',{mode:'compact'});
-    assert.equal((await call('monitor_status')).content[0].text,'Monitor · 1 running');
-    const stopped=await call('monitor_stop',{monitor_id:started.structuredContent.id});
+    await call('display',{mode:'compact'});
+    assert.equal((await call('status')).content[0].text,'Monitor · 1 running');
+    const stopped=await call('stop',{monitor_id:started.structuredContent.id});
     assert.equal(stopped.structuredContent.report.summary.running,0);
-    const command=await call('monitor_start',{name:'completed-event',options:{cwd:work,command:'node -e "process.exit(0)"',timeout_ms:10000},instructions:'Check exit',notify_on:['command_exit']});
+    const command=await call('start',{name:'completed-event',options:{cwd:work,command:'node -e "process.exit(0)"',timeout_ms:10000},instructions:'Check exit',notify_on:['command_exit']});
     let event;const deadline=Date.now()+5000;
     while(!event){event=(await rpc(dir,'status',{monitor_id:command.structuredContent.id})).events[0];if(Date.now()>deadline)assert.fail('Command completion missing');if(!event)await new Promise(r=>setTimeout(r,10));}
-    const inspected=await call('monitor_event',{event_ids:[event.id]});assert.equal(inspected.structuredContent.events[0].evidence.returncode,0);
+    const inspected=await call('event',{event_ids:[event.id]});assert.equal(inspected.structuredContent.events[0].evidence.returncode,0);
     assert.equal(inspected.structuredContent.events[0].actionable,true);assert.match(inspected.content[0].text,/needs review/);
-    const handled=await call('monitor_event',{event_ids:[event.id],resolution:'Verified exit 0'});
+    const handled=await call('event',{event_ids:[event.id],resolution:'Verified exit 0'});
     assert.equal(handled.structuredContent.report.summary.running,0);assert.equal(handled.structuredContent.report.summary.unhandled_events,0);
     assert.match(handled.content[0].text,/acknowledged/);assert.equal(handled.structuredContent.events[0].monitor_state,'stopped');
-    const bad=await call('monitor_event',{event_ids:[randomUUID()],resolution:'checked'});assert.equal(bad.isError,true);
+    const bad=await call('event',{event_ids:[randomUUID()],resolution:'checked'});assert.equal(bad.isError,true);
     assert.match(bad.content[0].text,/Unknown event/);
   }finally{await client.close();for(const directory of[dir,broker])try{await rpc(directory,'shutdown');}catch{}}
 });

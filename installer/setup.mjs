@@ -10,7 +10,7 @@ export const pluginId = 'codex-monitor@codex-monitor';
 export function settings(raw = {}, env = process.env) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('Configuration must be an object');
   for (const key of Object.keys(raw))
-    if (!['codex_home', 'client', 'display', 'hooks', 'bootstrap', 'replace'].includes(key))
+    if (!['codex_home', 'client', 'display', 'hooks', 'bootstrap', 'recovery', 'replace'].includes(key))
       throw Error(`Unknown setting: ${key}`);
   const r = {
     codex_home: env.CODEX_HOME || path.join(homedir(), '.codex'),
@@ -18,6 +18,7 @@ export function settings(raw = {}, env = process.env) {
     display: 'compact',
     hooks: true,
     bootstrap: true,
+    recovery: true,
     replace: false,
     ...raw,
   };
@@ -29,7 +30,7 @@ export function settings(raw = {}, env = process.env) {
     display: ['compact', 'verbose'],
   }))
     if (!values.includes(r[key])) throw Error(`${key} must be ${values.join(' or ')}`);
-  for (const key of ['hooks', 'bootstrap', 'replace'])
+  for (const key of ['hooks', 'bootstrap', 'recovery', 'replace'])
     if (typeof r[key] !== 'boolean') throw Error(`${key} must be true or false`);
   return r;
 }
@@ -143,7 +144,7 @@ export async function assertInactive(root) {
       ) ||
       state.recovery?.enabled ||
       ['preparing', 'waiting', 'waking'].includes(state.wait?.state) ||
-      Object.values(state.events || {}).some((e) => !e || ['pending', 'sending', 'unknown'].includes(e.state))
+      Object.values(state.events || {}).some((e) => !e || ['pending', 'sending', 'returned', 'unknown'].includes(e.state))
     )
       throw Error(
         `Active or unresolved monitoring in thread ${entry.name}. Stop its monitors, cancel its wait, disable recovery and reconcile pending/unknown events before upgrading. Training PIDs are not stopped by this installer.`,
@@ -192,8 +193,8 @@ export async function inspect(root, config, { env = process.env, execute = run }
       );
   }
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (manifest.name !== 'codex-monitor' || manifest.version !== '0.2.4')
-    throw Error('Expected the codex-monitor v0.2.4 package');
+  if (manifest.name !== 'codex-monitor' || manifest.version !== '0.3.0')
+    throw Error('Expected the codex-monitor v0.3.0 package');
   npmCommand(env);
   if (config.hooks) {
     const definitions = JSON.parse(await readFile(path.join(root, 'hooks/hooks.json'), 'utf8'));
@@ -226,10 +227,10 @@ export function activation(config, bundle, state = stateDirectory(config)) {
         : '1. Fully exit Codex CLI and reopen/resume the conversation.',
     '   Existing conversations can keep an old MCP connection even when discovery lists new tools.',
     '2. Open /plugins and confirm codex-monitor is enabled, then /mcp and check monitor.',
-    '3. Ask Codex to call monitor_display with your current thread ID. The new tool must actually execute.',
+    '3. Ask Codex to call display with your current thread ID. The new tool must actually execute.',
     config.hooks
       ? '4. Open /hooks. Review and trust ONLY codex-monitor Stop and Interrupt. Installing does not grant trust.'
-      : '4. Automatic Stop/Interrupt reports were omitted. Use monitor_report when needed.',
+      : '4. Automatic Stop/Interrupt reports were omitted. Use status when needed.',
     '   Finish installation before hook review. Do not edit the installed bundle afterward.',
     config.bootstrap
       ? '5. The launcher was requested. Check its result below; it is not an OS startup service.'
@@ -240,8 +241,10 @@ export function activation(config, bundle, state = stateDirectory(config)) {
     '6. Ask for a short command-exit demo. Expect a native event tool result and, when enabled, a one-line Stop report.',
     '   CLI shows text results; it does not render HTML panels or a separate background-arrival card.',
     '   Desktop HTML rendering is host-dependent and has not been visually validated.',
-    'Automatic recovery is not enabled by installation. Authorize it separately in the intended conversation.',
-    'Example: retry failed conversation turns every 300 seconds for at most 3 hours; respect manual interruption.',
+    config.recovery
+      ? 'Automatic recovery starts on first monitor/wait use in a new thread: abnormal failed turns, every 300 seconds, at most 3 hours per incident. Manual interruption and host limits take precedence.'
+      : 'Automatic recovery defaults are disabled for new threads.',
+    'Use recovery(enabled: false) to disable this thread. Explicit opt-outs and interrupted/restarted policies are not automatically re-enabled.',
   ].join('\n');
 }
 export async function apply(
@@ -273,7 +276,7 @@ export async function apply(
     if (e.code === 'EEXIST') throw Error(`Another installation may be running: ${lock}`);
     throw e;
   }
-  const bundle = path.join(parent, `0.2.4-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  const bundle = path.join(parent, `0.3.0-${Date.now()}-${randomUUID().slice(0, 8)}`);
   const context = detected.context;
   const codex = (args) => execute(detected.command, args, context);
   let registryChanged = false;
@@ -319,9 +322,9 @@ export async function apply(
     await codex(['plugin', 'marketplace', 'add', bundle, '--json']);
     await codex(['plugin', 'add', pluginId, '--json']);
     const result = JSON.parse(await codex(['plugin', 'list', '--json']));
-    if (!result.installed.some((p) => p.pluginId === pluginId && p.version === '0.2.4' && p.enabled))
-      throw Error('Codex did not report the enabled v0.2.4 installation');
-    const cache = path.join(config.codex_home, 'plugins/cache/codex-monitor/codex-monitor/0.2.4');
+    if (!result.installed.some((p) => p.pluginId === pluginId && p.version === '0.3.0' && p.enabled))
+      throw Error('Codex did not report the enabled v0.3.0 installation');
+    const cache = path.join(config.codex_home, 'plugins/cache/codex-monitor/codex-monitor/0.3.0');
     if (!existsSync(path.join(cache, 'codex-monitor/runtime/server.js')))
       throw Error('Installed cache was not found; inspect codex plugin list');
     await execute(process.execPath, [path.join(cache, 'codex-monitor/runtime/setup-probe.js')], {
@@ -330,7 +333,7 @@ export async function apply(
     });
     await mkdir(state, { recursive: true, mode: 0o700 });
     const temp = defaultsFile + `.${randomUUID()}.tmp`;
-    await writeFile(temp, JSON.stringify({ ...previous, display_mode: config.display }, null, 2) + '\n', {
+    await writeFile(temp, JSON.stringify({ ...previous, display_mode: config.display, recovery_enabled: config.recovery }, null, 2) + '\n', {
       mode: 0o600,
     });
     await rename(temp, defaultsFile);
@@ -349,7 +352,7 @@ export async function apply(
       }
     }
     const receipt = {
-      version: '0.2.4',
+      version: '0.3.0',
       installed_at: new Date().toISOString(),
       bundle,
       cache,

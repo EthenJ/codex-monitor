@@ -13,7 +13,8 @@ export const reportSchema = z.object({
   revision: z.number(), changes: z.array(z.record(z.string(), z.unknown())), changes_omitted: z.number(),
   live_updates: z.boolean(),
   capacity: capacitySchema.nullable(),
-  details: z.enum(['summary', 'active']).optional(),
+  details: z.enum(['summary', 'active', 'full']).optional(),
+  monitor_id: z.string().uuid().optional(),
   summary: z.object({ active: z.number(), running: z.number(), starting: z.number(), stopping: z.number(),
     stopped: z.number(), failed_or_unknown: z.number(), unhandled_events: z.number() }),
   monitors: z.array(z.record(z.string(), z.unknown())), events: z.array(z.record(z.string(), z.unknown())),
@@ -47,18 +48,23 @@ export function summarize(snapshot: Json, source: 'live' | 'saved' | 'empty' | '
     monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), kind: x.kind, state: x.state, deadline: x.deadline,
       muted: Boolean(x.muted),
       latest_event: x.latest_event, outcome: x.outcome?.reason,
-      ...(active.has(x.state) ? { stop: { tool: 'monitor_stop', monitor_id: x.id } } : {}) })),
-    events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, deferred_reason: x.deferred_reason })),
+      ...(active.has(x.state) ? { stop: { tool: 'stop', monitor_id: x.id } } : {}) })),
+    events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, timing: x.timing, deferred_reason: x.deferred_reason })),
     omitted: { monitors: records.length - selected.length, events: Math.max(0, pending.length - 8) },
-    wait: snapshot.wait ? { state: snapshot.wait.state, monitor_ids: snapshot.wait.monitor_ids, goal_control: snapshot.wait.goal_control,
+    wait: snapshot.wait ? { state: snapshot.wait.state, mode: snapshot.wait.mode, deadline: snapshot.wait.deadline,
+      started_at: snapshot.wait.started_at, released_at: snapshot.wait.released_at, elapsed_ms: snapshot.wait.elapsed_ms,
+      monitor_ids: snapshot.wait.monitor_ids, goal_control: snapshot.wait.goal_control,
       pause_owner: snapshot.wait.pause_owner ?? snapshot.goal_pause?.owner,
       wake_scope: snapshot.wait.wake_scope, guard_ids: snapshot.wait.guard_ids,
-      pause_barrier: snapshot.wait.pause_barrier, pause_checked_at: snapshot.wait.pause_checked_at, error: snapshot.wait.error } : null,
+      pause_barrier: snapshot.wait.pause_barrier, pause_checked_at: snapshot.wait.pause_checked_at,
+      reason: snapshot.wait.reason, error: snapshot.wait.error } : null,
     goal_pause: snapshot.goal_pause ? { owner: snapshot.goal_pause.owner, checked_at: snapshot.goal_pause.checked_at } : undefined,
     recovery: { enabled: r.enabled, state: r.state, attempts: r.attempts ?? 0, policy: r.policy,
       next_retry_at: r.next_retry_at ?? null, deadline: r.deadline,
-      ...(r.enabled ? { stop: { tool: 'monitor_recovery', enabled: false } } : {}) },
-    warnings: verified ? [] : ['Service unavailable. Saved states are historical and do not establish that observers or recovery are currently running.'] };
+      ...(r.enabled ? { stop: { tool: 'recovery', enabled: false } } : {}) },
+    warnings: verified ? [...(r.state === 'default_unavailable' ? [`Default automatic recovery unavailable: ${r.reason}`] : []),
+      ...(snapshot.callback_hold ? [`Monitor callbacks held: ${snapshot.callback_hold}`] : [])]
+      : ['Service unavailable. Saved states are historical and do not establish that observers or recovery are currently running.'] };
 }
 // Human-facing end-of-turn output. Detailed history stays in structured status.
 export function compactReport(report: Json): string {
@@ -69,6 +75,7 @@ export function compactReport(report: Json): string {
   if (stopping) parts.push(`${stopping} stopping`);
   if (report.recovery?.enabled) parts.push('auto-retry on');
   if (report.wait?.state === 'waiting' && report.wait.goal_control === 'paused') parts.push(report.wait.pause_barrier === 'ready' ? 'goal waiting for event' : 'goal paused; finishing current turn');
+  if (report.wait?.state === 'waiting' && report.wait.mode === 'blocking') parts.push('waiting for event or CLI input');
   const pressure = capacityWarning(report.capacity);
   if (pressure) parts.push(pressure);
   return `Monitor · ${parts.join(' · ')}`;
@@ -82,16 +89,41 @@ export async function waitReport(threadId: string, after: number, waitMs: number
   }
 }
 export async function readReport(threadId: string, root = stateRoot(), timeout = 1200) {
+  const { snapshot, source } = await readSnapshot(threadId, root, timeout);
+  return summarize(snapshot, source);
+}
+async function readSnapshot(threadId: string, root: string, timeout: number, full = false): Promise<{
+  snapshot: Json; source: 'live' | 'saved' | 'empty' | 'unavailable';
+}> {
   const directory = path.join(root, threadKey(threadId));
-  try { return summarize(await rpc(directory, 'status', {}, timeout), 'live'); }
+  try { return { snapshot: await rpc(directory, 'status', full ? { details: 'full' } : {}, timeout), source: 'live' }; }
   catch {
     try {
       const snapshot = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'));
       if (snapshot.thread_id !== threadId.toLowerCase()) throw Error('Saved thread mismatch');
-      return summarize(snapshot, 'saved');
+      return { snapshot, source: 'saved' };
     } catch (e: any) {
       const missing = e.code === 'ENOENT' && !existsSync(path.join(directory, 'endpoint.json'));
-      return summarize({ thread_id: threadId, recovery: { enabled: false, state: missing ? 'disabled' : 'unknown' } }, missing ? 'empty' : 'unavailable');
+      return { snapshot: { thread_id: threadId, recovery: { enabled: false, state: missing ? 'disabled' : 'unknown' } }, source: missing ? 'empty' : 'unavailable' };
     }
   }
+}
+// Read diagnostics without starting a service, observer, connection or recovery.
+export async function readStatus(threadId: string, options: { monitor_id?: string; details?: 'summary' | 'active' | 'full' } = {}, root = stateRoot()) {
+  const details = options.details ?? (options.monitor_id ? 'full' : 'summary');
+  if (options.monitor_id && details !== 'full') throw Error('monitor_id requires details: full');
+  const { snapshot, source } = await readSnapshot(threadId, root, 1200, details === 'full');
+  const report = summarize(snapshot, source);
+  if (details !== 'full') return { ...report, details };
+  const records: Json[] = Array.isArray(snapshot.monitors) ? snapshot.monitors : Object.values(snapshot.monitors || {});
+  const events: Json[] = Array.isArray(snapshot.events) ? snapshot.events : Object.values(snapshot.events || {});
+  const selected = options.monitor_id ? records.filter(m => m.id === options.monitor_id)
+    : report.monitors.map((m: Json) => records.find(r => r.id === m.id)).filter(Boolean);
+  if (options.monitor_id && !selected.length) throw Error('Unknown monitor ID');
+  const selectedEvents = options.monitor_id ? events.filter(e => e.monitor_id === options.monitor_id)
+    : report.events.map((e: Json) => events.find(r => r.id === e.id)).filter(Boolean);
+  return { ...report, details, ...(options.monitor_id ? { monitor_id: options.monitor_id } : {}),
+    monitors: selected, events: selectedEvents.slice(-8),
+    omitted: { monitors: options.monitor_id ? 0 : report.omitted.monitors,
+      events: options.monitor_id ? Math.max(0, selectedEvents.length - 8) : report.omitted.events } };
 }

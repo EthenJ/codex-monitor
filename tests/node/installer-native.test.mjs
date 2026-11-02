@@ -82,11 +82,11 @@ test(
           await bridge.rpc('mcpServerStatus/list', { threadId: thread, serverName: server.name })
         ).data.find((x) => x.pluginId === 'codex-monitor@codex-monitor');
         assert.equal(server.runtimeStatus, 'connected');
-        assert.equal(Object.keys(server.tools).length, 11);
+        assert.equal(Object.keys(server.tools).length, 8);
         const result = await bridge.rpc('mcpServer/tool/call', {
           threadId: thread,
           server: server.name,
-          tool: 'monitor_display',
+          tool: 'display',
           arguments: { thread_id: thread },
         });
         assert.ok(!result.isError);

@@ -6,7 +6,9 @@ import path from 'node:path';
 import { Bridge, codexExecutable } from '../../codex-monitor/runtime/bridge.js';
 import { capture } from '../../codex-monitor/runtime/processes.js';
 
-test('native installed plugin resolves its MCP cwd and UI resources from a different workspace', {skip:!process.env.CODEX_MONITOR_TEST_NATIVE,timeout:25000}, async()=>{
+// Copying locked native dependencies and creating a fresh plugin cache can
+// exceed 25 s on Windows when the full suite also runs installer fixtures.
+test('native installed plugin resolves its MCP cwd and UI resources from a different workspace', {skip:!process.env.CODEX_MONITOR_TEST_NATIVE,timeout:60000}, async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'monitor-plugin-native-'));let bridge;
   try {
     const source=path.join(root,'plugin with spaces'),work=path.join(root,'different workspace');await mkdir(source);await mkdir(work);
@@ -34,8 +36,10 @@ test('native installed plugin resolves its MCP cwd and UI resources from a diffe
     });
     server=(await bridge.rpc('mcpServerStatus/list',{threadId:thread,serverName:server.name})).data.find(x=>x.pluginId==='codex-monitor@codex-monitor');
     assert.equal(server.runtimeStatus,'connected',JSON.stringify({error:server.toolsError,notification:statuses.get(server.name)}));
-    assert.equal(Object.keys(server.tools).length,11);assert.ok(Object.values(server.tools).every(x=>x._meta.ui.resourceUri));
-    const r=await bridge.rpc('mcpServer/tool/call',{threadId:thread,server:server.name,tool:'monitor_report',arguments:{thread_id:thread}});
+    assert.equal(Object.keys(server.tools).length,8);assert.ok(Object.values(server.tools).every(x=>x._meta.ui.resourceUri));
+    assert.ok(server.tools.poll,'The native host must discover monitor.poll');
+    assert.equal(server.tools.monitor_wait,undefined,'The old waiting tool must not remain registered');
+    const r=await bridge.rpc('mcpServer/tool/call',{threadId:thread,server:server.name,tool:'status',arguments:{thread_id:thread}});
     assert.equal(r.isError,undefined);assert.equal(r.structuredContent.source,'empty');
     const resource=await bridge.rpc('mcpServer/resource/read',{threadId:thread,server:server.name,uri:server.resources[0].uri});
     assert.match(JSON.stringify(resource),/text\/html;profile=mcp-app/);

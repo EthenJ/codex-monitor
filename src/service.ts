@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -12,11 +12,24 @@ import { CAPACITY_ERROR, MonitorCapacityError } from './capacity.js';
 
 export async function rpc(directory: string, method: string, params: Json = {}, timeout = 20000, signal?: AbortSignal): Promise<any> {
   const endpoint = readJson(path.join(directory, 'endpoint.json'));
-  const response = await fetch(`http://127.0.0.1:${endpoint.port}/rpc`, { method: 'POST',
-    headers: { Authorization: `Bearer ${endpoint.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method, params }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
-  const result = await response.json() as Json;
-  if (!response.ok || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'),
+  const deadline = AbortSignal.timeout(timeout), body = JSON.stringify({ method, params });
+  // fetch/Undici has an independent 300-second headers timeout. A blocked poll
+  // deliberately sends no response until release, so use HTTP without that
+  // hidden limit and apply the caller's finite deadline to the entire request.
+  const { status, result } = await new Promise<{ status: number; result: Json }>((resolve, reject) => {
+    const request = httpRequest({ hostname: '127.0.0.1', port: endpoint.port, path: '/rpc', method: 'POST', agent: false,
+      headers: { Authorization: `Bearer ${endpoint.token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline }, response => {
+      const chunks: Buffer[] = [];
+      response.on('data', chunk => chunks.push(chunk)); response.on('error', reject);
+      response.on('end', () => {
+        try { resolve({ status: response.statusCode || 0, result: JSON.parse(Buffer.concat(chunks).toString('utf8')) }); }
+        catch (e) { reject(e); }
+      });
+    });
+    request.on('error', reject); request.end(body);
+  });
+  if (status < 200 || status >= 300 || result.error) throw Object.assign(Error(result.error || 'Local monitor request failed'),
     result.validation ? { report: result.validation } : {},
     result.code === CAPACITY_ERROR ? { code: result.code, capacity: result.capacity, guidance: result.guidance } : {});
   return result.result;
@@ -127,7 +140,7 @@ export async function serve(directory: string, threadId?: string) {
       } else {
         manager.lastUsed = now();
         switch (method) {
-          case 'status': result = manager.snapshot(params.monitor_id); break;
+          case 'status': result = manager.snapshot(params.monitor_id, params.details === 'full'); break;
           case 'report_wait': {
             const after = integer(params.after_revision, 'after_revision', 0, Number.MAX_SAFE_INTEGER);
             const timeout = integer(params.wait_ms, 'wait_ms', 1, 25000);
@@ -137,9 +150,23 @@ export async function serve(directory: string, threadId?: string) {
             finally { response.off('close', abort); }
             break;
           }
-          case 'start': result = await manager.start(params); break;
+          case 'start': result = await manager.start(params); await manager.activateDefaults(); break;
           case 'stop': result = await manager.stop(params.monitor_id); break;
-          case 'wait': result = await manager.beginWait(params); break;
+          case 'wait': {
+            const waiting: Json | null = (await Promise.all([manager.beginWait(params), manager.activateDefaults()]))[0];
+            result = waiting?.id && manager.wait?.id === waiting.id ? manager.snapshot().wait : waiting;
+            break;
+          }
+          case 'block_wait': {
+            const controller = new AbortController(), abort = () => controller.abort();
+            response.once('close', abort);
+            try {
+              if (response.destroyed) controller.abort();
+              [result] = await Promise.all([manager.blockWait(params, controller.signal), manager.activateDefaults()]);
+            }
+            finally { response.off('close', abort); }
+            break;
+          }
           case 'cancel_wait': result = await manager.cancelWait(); break;
           case 'ack': result = await manager.acknowledge(params); break;
           case 'event': result = await manager.reviewEvent(params); break;

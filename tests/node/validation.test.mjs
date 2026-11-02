@@ -148,34 +148,45 @@ test('real MCP publishes typed schemas, rejects typos, previews without service 
     await client.connect(new StdioClientTransport({ command: process.execPath,
       args: [fileURLToPath(new URL('../../codex-monitor/runtime/server.js', import.meta.url))], env: { ...process.env, CODEX_MONITOR_HOME: state } }));
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 11);
-    const startSchema = tools.find(x => x.name === 'monitor_start').inputSchema;
+    assert.equal(tools.length, 8);
+    assert.deepEqual(tools.map(x => x.name).sort(),
+      ['start','stop','event','status','validate','display','poll','recovery'].sort());
+    assert.ok(tools.some(x => x.name === 'poll'));
+    assert.ok(!tools.some(x => x.name === 'monitor_wait'));
+    const startSchema = tools.find(x => x.name === 'start').inputSchema;
     const variants = startSchema.properties.options.anyOf;
     assert.ok(variants.some(x => x.properties.command)); assert.ok(variants.some(x => x.properties.gpu_util_below?.maximum === 100));
     assert.ok(variants.every(x => x.additionalProperties === false));
-    assert.ok(tools.find(x => x.name === 'monitor_validate').outputSchema.properties.errors);
-    const waitSchema = tools.find(x => x.name === 'monitor_wait').inputSchema;
+    assert.ok(tools.find(x => x.name === 'validate').outputSchema.properties.errors);
+    const waitSchema = tools.find(x => x.name === 'poll').inputSchema;
     assert.ok(!waitSchema.required.includes('monitor_ids'));
     assert.deepEqual(waitSchema.properties.wake_scope.enum, ['thread', 'selected']);
+    assert.equal(waitSchema.properties.timeout_ms.default,3600000);
+    assert.ok(!waitSchema.required.includes('timeout_ms'));
+    assert.deepEqual(waitSchema.properties.mode.enum,['blocking','pause']);
     const call = (name, args) => client.callTool({ name, arguments: { thread_id: f.thread, ...args } });
-    const valid = await call('monitor_validate', { request: { operation: 'start', config: f.config }, check_host: false });
+    const valid = await call('validate', { request: { operation: 'start', config: f.config }, check_host: false });
     assert.equal(valid.structuredContent.valid, true); assert.equal(existsSync(f.directory), false);
-    const report = await call('monitor_report');
+    const report = await call('status');
     assert.equal(report.structuredContent.type, 'monitor_report'); assert.equal(report.structuredContent.source, 'empty');
     assert.equal(existsSync(f.directory), false);
-    const typo = await call('monitor_start', { ...f.config, options: { ...f.config.options, stalled_for: 100 } });
+    const typo = await call('start', { ...f.config, options: { ...f.config.options, stalled_for: 100 } });
     assert.equal(typo.isError, true); assert.equal(existsSync(f.directory), false);
     broker = await ensureBroker(state);
-    const bad = await call('monitor_start', { ...f.config, options: { cwd: f.work, watch_file: 'a', watch_directory: f.work } });
+    const bad = await call('start', { ...f.config, options: { cwd: f.work, watch_file: 'a', watch_directory: f.work } });
     assert.equal(bad.isError, true); assert.equal(bad.structuredContent.validation.valid, false);
-    const started = await call('monitor_start', { ...f.config, notify_on: ['monitor_expired'] });
+    const started = await call('start', { ...f.config, notify_on: ['monitor_expired'] });
     assert.equal(started.structuredContent.state, 'armed'); assert.equal(started.structuredContent.kind, 'watchdog');
-    const unguarded = await call('monitor_wait', { resume_instructions: 'Inspect the result', goal_authorization: 'Pause while waiting and resume on any monitor' });
+    const unguarded = await call('poll', { resume_instructions: 'Inspect the result', goal_authorization: 'Pause while waiting and resume on any monitor' });
     assert.equal(unguarded.isError, true); assert.equal(unguarded.structuredContent.state, 'guard_required');
     assert.equal(unguarded.structuredContent.error.code, 'MONITOR_GUARD_REQUIRED');
     assert.match(unguarded.content[0].text, /monitor_error and monitor_expired/);
-    const stopped = await call('monitor_stop', { monitor_id: started.structuredContent.id }); assert.equal(stopped.structuredContent.state, 'stopped');
-    const status = await call('monitor_status'); assert.equal(status.structuredContent.events.length, 0);
+    assert.equal(unguarded._meta.monitorView.tool, 'poll');
+    const legacy = await call('poll', { mode: 'pause' });
+    assert.equal(legacy.isError, true); assert.equal(legacy.structuredContent.state, 'guard_required');
+    assert.equal(legacy._meta.monitorView.tool, 'poll');
+    const stopped = await call('stop', { monitor_id: started.structuredContent.id }); assert.equal(stopped.structuredContent.state, 'stopped');
+    const status = await call('status'); assert.equal(status.structuredContent.events.length, 0);
   } finally {
     await client.close();
     for (const dir of [f.directory, broker].filter(Boolean)) { try { await rpc(dir, 'shutdown'); } catch {} }

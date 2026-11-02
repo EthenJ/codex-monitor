@@ -57,7 +57,7 @@ def validate(skill: Path) -> list[str]:
     for reference in re.findall(r"\]\(([^)#][^)]*)\)", body):
         if reference.startswith("http"):
             continue
-        if not (skill / reference).exists():
+        if not (skill / reference.partition("#")[0]).exists():
             errors.append(f"broken relative link: {reference}")
 
     if skill.name != name:

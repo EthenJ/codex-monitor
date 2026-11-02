@@ -44,8 +44,15 @@ export class Recovery {
     const authorization = parsed.config.authorization!, policy = parsed.policy!;
     const epoch = ++this.epoch; clearTimeout(this.timer);
     this.state = { ...this.state, enabled: false, state: 'configuring', next_retry_at: null }; this.save();
-    const bridge = await this.connect(); await loaded(bridge, this.threadId);
-    const latest = await latestTurn(bridge, this.threadId);
+    let latest: Json | undefined;
+    try {
+      const bridge = await this.connect(); await loaded(bridge, this.threadId);
+      latest = await latestTurn(bridge, this.threadId);
+    } catch (e) {
+      // A late host error must not replace a newer opt-out or interruption.
+      if (epoch !== this.epoch) return this.snapshot();
+      throw e;
+    }
     if (epoch !== this.epoch) return this.snapshot();
     this.currentRetry = undefined;
     this.state = { enabled: true, state: 'observing', policy, authorization, attempts: 0,
@@ -68,10 +75,13 @@ export class Recovery {
     return false;
   }
   notice(method: string, params: Json) {
-    if (!this.state.enabled || params.threadId !== this.threadId) return;
+    if ((!this.state.enabled && this.state.state !== 'configuring') || params.threadId !== this.threadId) return;
     if (method === 'turn/completed' && params.turn?.status === 'interrupted') { this.halt('Turn interrupted; never retry an interruption', 'cancelled'); return; }
     if (method === 'thread/goal/updated' && params.goal?.status !== 'active') {
-      if (this.waiting()) { this.state.state = 'waiting'; this.save(); return; }
+      if (this.waiting()) {
+        if (this.state.enabled) { this.state.state = 'waiting'; this.save(); }
+        return;
+      }
       this.halt(`Goal is ${params.goal?.status}; re-enable explicitly after resuming`, 'cancelled'); return;
     }
     if (method === 'thread/goal/cleared' || method === 'thread/closed' || method === 'thread/archived') { this.halt('Thread or goal was closed', 'cancelled'); return; }
