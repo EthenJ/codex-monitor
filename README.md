@@ -6,7 +6,8 @@ for a callback instead of repeatedly checking logs.
 
 Supports command completion and output matching, file/directory changes, process
 exit, training inactivity and NVIDIA GPU utilization. It also provides authorized
-goal pause/resume and optional recovery after conversation errors. No Codex source
+CLI waits that keep goals active, authorized goal pause/resume and bounded
+recovery after conversation errors. No Codex source
 build, Python runtime or separate model API key is required.
 
 ## How it works
@@ -15,18 +16,65 @@ build, Python runtime or separate model API key is required.
    Configuration and local prerequisites are validated before observation starts.
 2. A background Node.js service watches the workload. Healthy progress and local
    sensor sampling do not invoke the model.
-3. Relevant events are saved and delivered through the existing local Codex
-   daemon as native tool outputs to the original conversation.
+3. Relevant events are saved. During a blocking wait they return through the
+   pending MCP call; otherwise the existing local Codex daemon delivers native
+   tool outputs to the original conversation.
 4. The agent inspects the evidence, performs the registered action and
    acknowledges the event. Trusted Stop/Interrupt hooks report a concise running
    count when the turn ends, without a separate agent reporting call.
 
-When only monitored work remains, `monitor_wait` can pause the native goal with
-the user's pause/resume authorization. It checks unresolved events and live
-fallback guards, confirms the pause, and holds early events until the current
-turn has ended. A subsequent eligible event resumes the same goal. Manual pauses,
-interruptions and later goal changes take precedence; the plugin retains the
-native goal interface and budget.
+```mermaid
+flowchart TD
+    A["monitor.start: validate and register"] --> B["Background observers"]
+    B --> C["Command output / exit, file changes, process exit"]
+    B --> D["Training watchdog: file inactivity / low GPU dwell"]
+    D --> E{"Configured any / all stall rule reached?"}
+    C --> F["Save a relevant event with evidence"]
+    E -->|Yes| F
+    E -->|No| B
+    F --> G{"Matching blocking poll pending?"}
+    G -->|Yes| H["Return evidence through that MCP call"]
+    G -->|No| I["Local Codex daemon delivers monitor.event"]
+    H --> J["Agent inspects, acts and resolves the event"]
+    I --> J
+```
+
+Healthy sensor samples stay in the background. Training stall alerts use the
+configured inactivity durations and GPU dwell thresholds; PID exit, sensor
+errors and observer expiry provide separate failure signals. Delivery also
+respects manual interruption, paused goals and unresolved prior results.
+
+When only monitored work remains, `poll` (shown as `monitor.poll` in CLI)
+defaults to a blocking wait.
+The goal stays active and the tool remains pending without repeated model calls.
+A monitor event, finite timeout or newly submitted CLI input releases it. The
+plugin samples newly appended input-history records for the exact conversation
+locally (250 ms by default); message text stays with Codex. This CLI adapter
+requires readable input history under the same `CODEX_HOME` and does not establish
+desktop-client support. Blocking may still count toward goal elapsed time.
+
+```mermaid
+flowchart TD
+    A["Agent finishes independent work"] --> B["monitor.poll: reconcile events and verify live guards"]
+    B --> C["Keep one MCP call pending; goal stays active"]
+    C --> D{"First wake condition"}
+    D -->|Monitor event| E["Return evidence for the agent to handle"]
+    D -->|New same-thread CLI input| F["Release the call; Codex consumes the queued message"]
+    D -->|Timeout| G["Return once; agent reassesses the task"]
+    E --> H["Continue authorized work"]
+    F --> H
+    G --> H
+```
+
+The timeout is one hour when omitted; a supplied valid timeout takes precedence.
+Input sampling runs locally without model turns. Manual cancellation, goal
+changes or connection loss also release the call; these paths require
+reconciliation rather than silently restarting an interrupted wait.
+
+Explicit `mode: "pause"` retains authorized native pause/resume waiting. It
+confirms the pause and holds early events until the current turn has ended.
+Manually resuming the same live paused goal preserves its monitors. Manual
+pauses, task/budget edits and interruptions take precedence in both modes.
 
 Stopping a command monitor terminates its owned command tree. A watchdog observes
 an existing workload and never terminates its PID. Native callbacks require the
@@ -47,13 +95,14 @@ node install.mjs
 ```
 
 The wizard asks for the Codex configuration directory, client, compact/verbose
-output, automatic hook reports and background launcher startup. It shows the
+output, automatic hook reports, background launcher startup and default recovery
+(on: retry abnormal failures every 300 seconds for up to 3 hours). It shows the
 plan before installing. Use `node install.mjs --dry-run` to preview it.
 
 After installation:
 
 1. Fully exit and reopen Codex. Check the plugin in `/plugins` and its connection
-   in `/mcp`; ask Codex to call `monitor_display` to verify execution.
+   in `/mcp`; ask Codex to call `display` to verify execution.
 2. If automatic reports were included, review and trust this plugin's Stop and
    Interrupt hooks in `/hooks`. An upgrade may require reviewing them again.
 3. If the launcher was not started, run the command printed by setup from an
@@ -70,38 +119,69 @@ Describe the workload and desired action to Codex, for example:
 
 > Monitor this training process and its metrics file for 24 hours. Alert if
 > progress stops for five minutes and GPU utilization stays below 10% for two
-> minutes. Continue other work; when only training remains, pause the goal and
-> resume it on an event. Do not enable conversation retries.
+> minutes. Continue other work; when only training remains, wait in the CLI
+> without pausing the goal and respond to my additional input. Do not enable
+> conversation retries.
 
 Configuration uses MCP tools with validated types and ranges. The agent supplies
 the exact current `thread_id`; `options.cwd` must be an absolute workload directory.
 
 | Setting | Tool / field | Default |
 | --- | --- | --- |
-| Display | `monitor_display`: `mode` | `compact`; use `verbose` for diagnostics |
-| Observer lifetime | `monitor_start`: `options.timeout_ms` | 30 minutes; watchdog maximum 7 days, owned command maximum 30 minutes |
+| Display | `display`: `mode` | `compact`; use `verbose` for diagnostics |
+| Waiting | `poll`: `mode` | `blocking` for CLI; `pause` for authorized native pause/resume |
+| Wait deadline | `poll`: `timeout_ms` | 1 hour (3,600,000 ms); maximum 24 hours |
+| CLI input sampling | `poll`: `input_poll_ms` | 250 ms in the background; range 50–5,000 ms |
+| Observer lifetime | `start`: `options.timeout_ms` | 30 minutes; watchdog maximum 7 days, owned command maximum 30 minutes |
 | File progress | `options.watch_file` or `options.watch_directory`, `options.stalled_for_ms` | Inactivity rule requires an explicit duration |
 | GPU health | `options.gpu_util_below`, `options.gpu_below_for_ms`, `options.gpu_id` | Off until a threshold is set; default dwell 2 minutes, GPU `0` |
-| Retry interval | `monitor_recovery`: `retry_interval_ms` | Fixed 300,000 ms (5 minutes) |
-| Retry incident limit | `monitor_recovery`: `max_elapsed_ms` | 10,800,000 ms (3 hours) |
-| Recovery lifetime | `monitor_recovery`: `lifetime_ms` | 86,400,000 ms (24 hours) |
+| Retry interval | `recovery`: `retry_interval_ms` | Fixed 300,000 ms (5 minutes) |
+| Retry incident limit | `recovery`: `max_elapsed_ms` | 10,800,000 ms (3 hours) |
+| Recovery lifetime | `recovery`: `lifetime_ms` | 86,400,000 ms (24 hours) |
 
 For training, use `options.watchdog_only: true` to keep healthy progress quiet, with
 `process_exit`, `watchdog_stalled`, `monitor_error` and `monitor_expired` notifications.
 Choose `options.dead_if: "all"` to require both configured file and GPU stall conditions,
 or `"any"` to alert on either. Set a lifetime that covers the expected run.
 
-Recovery is **off until explicitly authorized**. It waits for Codex's own retries
-to finish, then retries verified failed turns within the configured limits.
-`retry_mode: "transient"` covers recognized connection/server failures;
-`"all_failed"` additionally covers unlisted failures. Manual interruption,
-paused goals and host budget/usage limits prevent recovery. Disable it with
-`monitor_recovery` using `enabled: false`.
+Recovery is **enabled by default** on first monitor/wait use in a new thread:
+`all_failed`, every 300 seconds, at most 3 hours per incident, with a separate
+24-hour supervisor lifetime. It waits for Codex's own retries to finish and only
+retries verified failed turns. Manual interruption, paused goals and host
+budget/usage limits prevent recovery. Disable it per thread with
+`recovery(enabled: false)`, or select `recovery: false` during setup for
+new threads. Explicit opt-outs, stopped policies and service restarts are never
+silently re-enabled by another monitor operation. Custom policies remain
+configurable; `transient` narrows eligibility to recognized connection/server
+failures.
 
-Use `monitor_validate` to preview configuration, `monitor_status` to inspect a
-specific observer, and `monitor_report` when a status summary is wanted. Routine
-end-of-turn summaries come from trusted hooks. Request `details: "active"` for
-the active monitor list. Capacity warns at 24 occupied slots, with a hard limit
+```mermaid
+flowchart TD
+    A["First monitor / wait use in a new thread"] --> B{"Recovery enabled by installation policy?"}
+    B -->|No| C["Keep recovery off"]
+    B -->|Yes| D["Observe terminal turn status locally"]
+    D --> E{"Verified eligible failure after host retries?"}
+    E -->|No| D
+    E -->|Yes| F["Wait a fixed 300 seconds by default"]
+    F --> G{"Same failed turn, unchanged goal and limits available?"}
+    G -->|Yes| H["Request continuation in the same conversation"]
+    H --> D
+    G -->|No| I["Do not submit; reconcile or stop as appropriate"]
+```
+
+The default incident window is three hours. Manual interruption, explicit
+opt-out, exhausted limits and uncertain submissions stop automatic recovery;
+later monitor calls do not silently turn it back on. Retries resume the
+conversation and instruct the agent to reconcile effects before repeating work.
+
+The eight tools are `start`, `stop`, `event`, `status`, `validate`, `display`,
+`poll` and `recovery`, under the `monitor` namespace. Use `validate` to preview
+configuration, `event` to inspect and resolve events, and `status` for a read-only
+summary. Request `details: "active"` for the active list or supply `monitor_id`
+for full observer evidence. Routine end-of-turn summaries come from trusted
+hooks. `stop(target: "wait")` ends waiting and mutes its selected notifications,
+preserving observers and the goal; `stop(monitor_id: ...)` stops the observer.
+Capacity warns at 24 occupied slots, with a hard limit
 of 32; reconcile obsolete or compatible overlapping observers before adding more.
 For concise waits, omit `resume_instructions` unless changing the next action.
 The CLI controls argument display and hook rendering; hooks have no independent

@@ -1,3 +1,4 @@
+import { VERSION } from './common.js';
 export const widgetUri = 'ui://codex-monitor/status-v022.html';
 export const widgetMeta = {
     ui: { resourceUri: widgetUri },
@@ -58,8 +59,8 @@ export const widgetHtml = String.raw `<!doctype html>
       const data=view.result||{};const details=view.isError?(data.error?.message||data.error||'Request failed'):(data.state|| (data.valid===true?'Validation passed':data.valid===false?'Validation failed':''));
       if(details)card.append(el('div',details,view.isError?'details error-text':'details'));
       if(data.name)card.append(el('div',data.name,'details'));
-      const events=$('event-card');events.hidden=view.tool!=='monitor_event';events.replaceChildren();
-      if(view.tool==='monitor_event')for(const e of data.events||[]){
+      const events=$('event-card');events.hidden=view.tool!=='event';events.replaceChildren();
+      if(view.tool==='event')for(const e of data.events||[]){
         const alert=['watchdog_stalled','monitor_error','monitor_expired'].includes(e.event_type)||(e.event_type==='command_exit'&&e.evidence?.returncode!==0);
         const item=el('article'),row=el('div',undefined,'row');
         row.append(el('strong',e.name||e.monitor_id,'label'),el('span',e.actionable?'Needs review':e.state,'badge '+(alert?'warn':'ok')));
@@ -69,7 +70,7 @@ export const widgetHtml = String.raw `<!doctype html>
       if(view.report)render(view.report);
     }
     if(result?.structuredContent?.type==='monitor_report')render(result.structuredContent);
-    if(!received && view?.tool==='monitor_report' && report?.live_updates)wanted=true;
+    if(!received && view?.tool==='status' && report?.live_updates)wanted=true;
     received=true;
     pump();
   }
@@ -79,7 +80,7 @@ export const widgetHtml = String.raw `<!doctype html>
     try {
       while(wanted&&!document.hidden&&!disposed) {
         status('Live');
-        const result=await request('tools/call',{name:'monitor_report',arguments:{thread_id:thread,...(report?.live_updates?{after_revision:report.revision,wait_ms:25000}:{})}});
+        const result=await request('tools/call',{name:'status',arguments:{thread_id:thread,...(report?.live_updates?{after_revision:report.revision,wait_ms:25000}:{})}});
         if(result?.isError)throw Error('Live report unavailable');
         const next=result?.structuredContent;
         if(!next || next.thread_id!==thread)throw Error('Invalid report response');
@@ -99,7 +100,7 @@ export const widgetHtml = String.raw `<!doctype html>
     if(m.method==='ui/notifications/tool-input'){const candidate=m.params?.arguments?.thread_id||m.params?.thread_id;if(!thread&&typeof candidate==='string')thread=candidate;}
     if(m.method==='ui/resource-teardown'){disposed=true;wanted=false;window.parent.postMessage({jsonrpc:'2.0',id:m.id,result:{}},'*');}
   });
-  request('ui/initialize',{appInfo:{name:'codex-monitor',version:'0.2.4'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(()=>{
+  request('ui/initialize',{appInfo:{name:'codex-monitor',version:'${VERSION}'},appCapabilities:{},protocolVersion:'2026-01-26'}).then(()=>{
     initialized=true;notify('ui/notifications/initialized',{});$('live').disabled=!thread;pump();
   }).catch(()=>{status('Snapshot only',true);$('notice').textContent='This host does not provide the MCP Apps bridge. Use the native tool result.';});
 })();

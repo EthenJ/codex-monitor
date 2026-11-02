@@ -22,7 +22,9 @@ export class Changes {
             values.push({ category: 'event', id: e.id,
                 monitor_id: e.monitor_id, event_type: e.event_type, state: e.state, processing: e.processing, deferred_reason: e.deferred_reason });
         if (snapshot.wait)
-            values.push({ category: 'wait', id: snapshot.wait.id, state: snapshot.wait.state, goal_control: snapshot.wait.goal_control, pause_barrier: snapshot.wait.pause_barrier });
+            values.push({ category: 'wait', id: snapshot.wait.id, state: snapshot.wait.state,
+                mode: snapshot.wait.mode, deadline: snapshot.wait.deadline, reason: snapshot.wait.reason,
+                goal_control: snapshot.wait.goal_control, pause_barrier: snapshot.wait.pause_barrier });
         if (snapshot.goal_pause)
             values.push({ category: 'goal_pause', state: snapshot.goal_pause.owner });
         if (snapshot.recovery) {
