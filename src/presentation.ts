@@ -25,7 +25,7 @@ function duration(value: unknown) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown';
   return value % 3600000 === 0 ? `${value / 3600000} h` : `${value / 1000} s`;
 }
-const liveStates = new Set(['armed', 'starting', 'stopping']);
+const liveStates = new Set(['armed', 'starting', 'reconnecting', 'stopping']);
 function state(value: unknown) { return value === 'armed' ? 'running' : label(value); }
 
 export function renderSummary(tool: string, data: Json, isError = false, mode: DisplayMode = 'compact', view?: Json): string {
@@ -43,11 +43,11 @@ export function renderSummary(tool: string, data: Json, isError = false, mode: D
   if (tool === 'event') {
     const lines: string[] = [], events: Json[] = data.events || [];
     for (const e of events.slice(0, mode === 'verbose' ? 8 : 3)) {
-      const failure = ['monitor_error', 'monitor_expired', 'watchdog_stalled'].includes(e.event_type) ||
+      const failure = ['monitor_error', 'monitor_expired', 'watchdog_stalled', 'connection_lost', 'connection_unresponsive'].includes(e.event_type) ||
         (e.event_type === 'command_exit' && e.evidence?.returncode !== 0);
       const icon = failure ? '!' : e.event_type === 'command_exit' && e.evidence?.returncode === 0 ? '✓' : '●';
       const exit = ['command_exit', 'process_exit'].includes(e.event_type) ? ` · exit ${label(e.evidence?.returncode ?? 'unknown')}` : '';
-      lines.push(`Monitor event · ${label(e.name || e.monitor_id)}`,
+      lines.push(`Monitor event · ${label(e.connection_id ? e.evidence?.host : e.name || e.monitor_id)}${e.affected_monitor_ids ? ` · ${e.affected_monitor_ids.length} monitors affected` : ''}`,
         `  ${icon} ${eventNames[e.event_type] || label(e.event_type)}${exit} · ${e.actionable ? 'needs review' : label(e.state)}`);
       if (mode === 'verbose') lines.push(`  Event: ${label(e.id)} · Monitor: ${label(e.monitor_id)}`, `  At ${at(e.occurred_at)} · observer ${state(e.monitor_state)}`);
     }

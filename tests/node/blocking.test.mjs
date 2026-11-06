@@ -94,6 +94,18 @@ test('stopping waiting during host verification prevents late attachment',async 
   assert.ok(!f.manager.records[f.monitor.id].muted);assert.deepEqual(f.host.mutations,[]);
 });
 
+test('stopping one observer releases its shared wait without muting the other observer',async t=>{
+  const f=await fixture(t),other=await f.start('remaining');
+  const pending=f.block();await f.armed();
+  await f.manager.stop(f.monitor.id);const result=await pending;
+  assert.equal(result.reason,'monitor_stopped');assert.equal(result.goal_control,'unchanged');
+  assert.equal(f.manager.records[f.monitor.id].state,'stopped');
+  assert.equal(f.manager.records[other.id].state,'armed');assert.ok(!f.manager.records[other.id].muted);
+  f.manager.event(other.id,{event_type:'file_change',path:'remaining'});
+  await f.manager.flush();assert.equal(f.host.submissions.length,1);
+  assert.deepEqual(f.host.mutations,[]);
+});
+
 test('a burst of events stays local until the evidence returned by blocking is reconciled',async t=>{
   const f=await fixture(t),pending=f.block();await f.armed();
   f.manager.event(f.monitor.id,{event_type:'file_change',path:'first'});

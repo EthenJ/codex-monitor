@@ -4,6 +4,7 @@ export const eventNames: Record<string, string> = {
   file_change: 'file changed', command_exit: 'command finished', command_output: 'output matched',
   process_exit: 'process exited', watchdog_stalled: 'possible stall', watchdog_recovered: 'progress resumed',
   monitor_error: 'monitor error', monitor_expired: 'monitor expired',
+  connection_lost: 'SSH connection lost', connection_unresponsive: 'SSH response timed out', connection_restored: 'SSH connection restored',
 };
 function label(value: unknown) {
   return String(value ?? 'unknown').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
@@ -15,7 +16,7 @@ export function eventText(payload: Json): string {
   if (payload.type === 'monitor_events') {
     const events: Json[] = Array.isArray(payload.events) ? payload.events : [];
     const lines = events.flatMap(event => [
-      `Monitor · ${label(event.name)} · ${eventNames[event.event_type] || label(event.event_type)}`,
+      `Monitor · ${label(event.name)} · ${eventNames[event.event_type] || label(event.event_type)}${event.affected_monitor_ids ? ` · ${event.affected_monitor_ids.length} monitors affected` : ''}`,
       `  Monitor ID: ${label(event.monitor_id)} · Event ID: ${label(event.event_id)}`,
     ]);
     if (!events.length) lines.push('Monitor · workload event');

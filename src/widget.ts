@@ -42,7 +42,7 @@ export const widgetHtml = String.raw`<!doctype html>
     $('notice').textContent=r.verified?(r.warnings||[]).join(' '):'Saved state only — live supervision is not verified. '+(r.warnings||[]).join(' ');
     const recovery=r.recovery||{};
     $('policy').textContent='Wait: '+clean(r.wait?.state||'none')+' · Recovery: '+clean(recovery.state||'disabled')+(recovery.enabled?' · '+clean(recovery.attempts||0)+' attempts · retry every '+clean((recovery.policy?.retry_interval_ms||0)/1000)+' s · next '+date(recovery.next_retry_at):'');
-    const verbose=r.display_mode==='verbose', monitors=(r.monitors||[]).filter(m=>verbose||['armed','starting','stopping','failed','unknown'].includes(m.state));
+    const verbose=r.display_mode==='verbose', monitors=(r.monitors||[]).filter(m=>verbose||['armed','starting','reconnecting','stopping','failed','unknown'].includes(m.state));
     $('monitors').replaceChildren(...monitors.map(m=>{const card=el('article'),row=el('div',undefined,'row');row.append(el('strong',m.name,'label'),el('span',m.state,'badge'));card.append(row,el('div','Deadline: '+date(m.deadline)+(m.latest_event?' · '+clean(m.latest_event.event_type):''),'details'));return card;}));
     if(!monitors.length)$('monitors').append(el('div','No active monitors.','muted empty'));
     const changes=(r.changes||[]).filter(c=>verbose||!['starting','sending'].includes(c.state));

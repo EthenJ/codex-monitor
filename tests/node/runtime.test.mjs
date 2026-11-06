@@ -53,6 +53,19 @@ async function eventually(predicate, timeout = 4000) {
   while (!predicate()) { if (Date.now() > deadline) assert.fail('condition timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
 
+test('stopping one observer preserves the other and permits an authorized paused wait to be re-established',async t=>{
+  const {manager,host,work,start}=await fixture(t),first=await start();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Inspect other result'});
+  await manager.beginWait({goal_authorization:'Pause while waiting and resume on a monitor event'});
+  assert.equal(host.goal.status,'paused');
+  await manager.stop(first.id);assert.ok(!manager.records[other.id].muted);
+  assert.equal(host.goal.status,'paused');assert.equal(host.changes.length,1);
+  const wait=await manager.beginWait({});assert.equal(wait.state,'waiting');assert.equal(wait.goal_control,'paused');
+  assert.deepEqual(wait.monitor_ids,[other.id]);assert.equal(host.changes.length,1);
+  manager.event(other.id,{event_type:'file_change',path:'other'});await manager.flush();
+  assert.equal(host.submissions.length,1);assert.equal(host.goal.status,'active');
+});
+
 test('omitted resume instructions use a safe default, refresh live context and discard ended context', async t => {
   const { manager, host, start } = await fixture(t);
   const monitor = await start();
@@ -1061,6 +1074,126 @@ test('history collection retains instructions for unacknowledged submitted event
   }
   await assert.rejects(start(), /history busy/);
   for (const key of Object.keys(manager.events)) assert.equal(manager.snapshot(key).monitors[0].instructions, 'Retain evidence');
+});
+
+test('event history pressure retains unhandled failed evidence and reclaims only settled entries',async t=>{
+  const {manager,start}=await fixture(t),monitor=await start(),failed=randomUUID();
+  manager.events[failed]={id:failed,monitor_id:monitor.id,state:'failed',event_type:'connection_lost',evidence:{error:'Host unavailable'},expires_at:Date.now()+60000};
+  const settled=[];
+  for(let i=0;i<255;i++) {const id=randomUUID();settled.push(id);manager.events[id]={id,monitor_id:monitor.id,state:'acknowledged'};}
+  manager.event(monitor.id,{event_type:'file_change',path:'new-result'});
+  assert.ok(manager.events[failed],'A failed delivery still requires inspection and must not be silently collected');
+  assert.equal(manager.events[failed].state,'failed');assert.equal(Object.keys(manager.events).length,256);
+  assert.ok(settled.some(id=>!manager.events[id]));
+});
+
+test('events expiring during goal verification are never submitted after their deadline',async t=>{
+  const {manager,host,start}=await fixture(t),monitor=await start();host.goal=null;
+  t.mock.timers.enable({apis:['Date'],now:1800000000000});
+  manager.event(monitor.id,{event_type:'file_change',path:'late'});
+  const event=Object.values(manager.events)[0];event.expires_at=Date.now()+1000;
+  const rpc=host.rpc.bind(host);
+  host.rpc=async(method,params)=>{if(method==='thread/goal/get')t.mock.timers.setTime(event.expires_at);return rpc(method,params);};
+  await manager.flush();assert.equal(host.submissions.length,0);assert.equal(event.state,'expired');
+});
+
+for(const change of ['stop','acknowledge','expire','pause','cancel_wait'])test(`callback final loaded-thread check respects ${change} before the write`,async t=>{
+  const {manager,host,start}=await fixture(t),monitor=await start();
+  await manager.connect();
+  if(change==='cancel_wait')await manager.beginWait({goal_authorization:'Pause while waiting and resume on a monitor event'});
+  manager.event(monitor.id,{event_type:'file_change',path:'result'});
+  const event=Object.values(manager.events)[0],rpc=host.rpc.bind(host);let checks=0;
+  host.rpc=async(method,params)=>{
+    if(method==='thread/loaded/list' && ++checks===2){
+      if(change==='stop')await manager.stop(monitor.id);
+      if(change==='acknowledge')await manager.reviewEvent({event_ids:[event.id],resolution:'Handled before dispatch'});
+      if(change==='expire')event.expires_at=0;
+      if(change==='cancel_wait')await manager.cancelWait();
+      if(change==='pause'){host.goal.status='paused';host.goal.updatedAt++;host.emit('notification','thread/goal/updated',{threadId:host.thread,turnId:null,goal:structuredClone(host.goal)});}
+    }
+    return rpc(method,params);
+  };
+  await manager.flush();assert.equal(checks,2);assert.equal(host.submissions.length,0);
+  assert.notEqual(event.state,'sending');assert.notEqual(event.state,'unknown');
+  if(change==='cancel_wait')assert.equal(manager.wait.state,'cancelled');
+  if(['pause','cancel_wait'].includes(change))assert.equal(host.goal.status,'paused');
+});
+
+for(const change of ['interrupt','disable','deadline','new_turn'])test(`recovery final loaded-thread check respects ${change} without spending an attempt`,async t=>{
+  t.mock.timers.enable({apis:['Date'],now:1800000000000});
+  const {recovery,host}=await recoveryFixture(t),rpc=host.rpc.bind(host);let checks=0;
+  host.rpc=async(method,params)=>{
+    if(method==='thread/loaded/list' && ++checks===2){
+      if(change==='interrupt')host.emit('notification','turn/completed',{threadId:host.thread,turn:{id:'manual',status:'interrupted'}});
+      if(change==='disable')await recovery.configure({enabled:false});
+      if(change==='deadline')t.mock.timers.setTime(recovery.state.incident_started_at+recovery.state.policy.max_elapsed_ms);
+      if(change==='new_turn'){host.turn={id:'manual',status:'inProgress'};host.emit('notification','turn/started',{threadId:host.thread,turn:host.turn});}
+    }
+    return rpc(method,params);
+  };
+  recovery.state.next_retry_at=0;await recovery.check();
+  assert.equal(checks,2);assert.equal(host.submissions.length,0);assert.equal(recovery.state.attempts,0);
+  assert.equal(recovery.state.next_retry_at,null,'Invalidated retries must not retain an overdue fast-poll deadline');
+});
+
+test('new active work clears an overdue recovery deadline until a new terminal failure is verified',async t=>{
+  const {recovery,host}=await recoveryFixture(t);
+  host.turn={id:'manual',status:'inProgress'};host.status='active';recovery.state.next_retry_at=0;
+  await recovery.check();assert.equal(recovery.state.next_retry_at,null);assert.equal(recovery.state.state,'observing');
+  assert.equal(host.submissions.length,0);
+});
+
+test('monitor waiting clears an overdue recovery deadline instead of checking the host every 100 ms',async t=>{
+  let waiting=false;const {recovery,host}=await recoveryFixture(t,{},undefined,()=>waiting);
+  waiting=true;recovery.state.next_retry_at=0;await recovery.check();
+  assert.equal(recovery.state.next_retry_at,null);assert.equal(recovery.state.state,'waiting');assert.equal(host.submissions.length,0);
+});
+
+test('a monitor wait established during recovery host reads preserves the supervisor',async t=>{
+  let waiting=false;const {recovery,host}=await recoveryFixture(t,{},undefined,()=>waiting);
+  const rpc=host.rpc.bind(host);
+  host.rpc=async(method,params)=>{
+    if(method==='thread/goal/get'){
+      waiting=true;host.goal.status='paused';
+      host.emit('notification','thread/goal/updated',{threadId:host.thread,goal:structuredClone(host.goal)});
+    }
+    return rpc(method,params);
+  };
+  recovery.state.next_retry_at=0;await recovery.check();
+  assert.equal(recovery.state.enabled,true,'A plugin-owned wait must not become a permanent recovery opt-out');
+  assert.equal(recovery.state.state,'waiting');assert.equal(recovery.state.next_retry_at,null);
+  assert.equal(host.submissions.length,0);assert.equal(recovery.state.attempts,0);
+});
+
+test('an overdue recovery retry cannot turn host outages into a 100 ms reconnect loop',async t=>{
+  const {recovery,host}=await recoveryFixture(t);
+  t.mock.timers.enable({apis:['setTimeout']});
+  const rpc=host.rpc.bind(host),incident=recovery.state.incident_started_at;
+  let reads=0;
+  host.rpc=async()=>{reads++;throw Error('Daemon temporarily unavailable');};
+  recovery.state.next_retry_at=0;await recovery.check();
+  assert.equal(recovery.state.state,'connection_unavailable');assert.equal(reads,1);
+  t.mock.timers.tick(recovery.state.policy.check_interval_ms-1);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reads,1,'Host reconnects should use the configured observation interval');
+  t.mock.timers.tick(1);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reads,2);assert.equal(recovery.state.attempts,0);assert.equal(host.submissions.length,0);
+  assert.equal(recovery.state.next_retry_at,0);assert.equal(recovery.state.incident_started_at,incident);
+  host.rpc=rpc;await recovery.check();
+  assert.equal(host.submissions.length,1);assert.equal(recovery.state.attempts,1);
+  assert.equal(recovery.state.incident_started_at,incident,'Restoring transport must not restart the incident budget');
+});
+
+test('the final callback check removes cancelled members while delivering unaffected events',async t=>{
+  const {manager,host,start,work}=await fixture(t),first=await start();host.goal=null;await manager.connect();
+  const other=await manager.start({name:'other',options:{cwd:work,watch_file:'other',timeout_ms:10000},instructions:'Inspect other result'});
+  manager.event(first.id,{event_type:'file_change',path:'first'});manager.event(other.id,{event_type:'file_change',path:'other'});
+  const events=Object.values(manager.events),rpc=host.rpc.bind(host);let checks=0;
+  host.rpc=async(method,params)=>{if(method==='thread/loaded/list' && ++checks===2)await manager.stop(first.id);return rpc(method,params);};
+  await manager.flush();assert.equal(host.submissions.length,1);
+  assert.equal(events[0].state,'suppressed');assert.equal(events[1].state,'submitted');
+  assert.doesNotMatch(host.submissions[0].toolOutput.output,new RegExp(events[0].id));
+  assert.match(host.submissions[0].toolOutput.output,new RegExp(events[1].id));
 });
 
 test('unknown inherited object keys cannot be used as monitor or event IDs', async t => {

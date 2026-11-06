@@ -150,7 +150,16 @@ export async function serve(directory: string, threadId?: string) {
             finally { response.off('close', abort); }
             break;
           }
-          case 'start': result = await manager.start(params); await manager.activateDefaults(); break;
+          case 'start': {
+            const controller = new AbortController(), abort = () => controller.abort();
+            response.once('close', abort);
+            try {
+              if (response.destroyed) controller.abort();
+              result = await manager.start(params, controller.signal);
+              if (!controller.signal.aborted) await manager.activateDefaults();
+            } finally { response.off('close', abort); }
+            break;
+          }
           case 'stop': result = await manager.stop(params.monitor_id); break;
           case 'wait': {
             const waiting: Json | null = (await Promise.all([manager.beginWait(params), manager.activateDefaults()]))[0];

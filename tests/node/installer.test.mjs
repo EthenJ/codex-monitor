@@ -108,6 +108,7 @@ test('active, pending and corrupt monitor state blocks upgrades before dependenc
   for (const value of [
     { monitors: [{ state: 'armed' }] },
     { monitors: { one: { state: 'starting' } } },
+    { monitors: { remote: { state: 'reconnecting' } } },
     { recovery: { enabled: true } },
     { wait: { state: 'waiting' } },
     { events: { one: { state: 'pending' } } },

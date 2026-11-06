@@ -1,0 +1,11 @@
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+COPY tests/node/ssh-linux-client.test.mjs ./tests/node/
+RUN npm run build
+CMD ["node", "--test", "tests/node/ssh-linux-client.test.mjs"]

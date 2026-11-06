@@ -3,8 +3,9 @@ import { z } from 'zod';
 const str = (max = 4096) => z.string().min(1).max(max).refine(x => Boolean(x.trim()), 'Must contain non-whitespace text');
 const int = (min: number, max: number) => z.number().int().min(min).max(max);
 const week = 604800000;
-export const eventSchema = z.enum(['command_output', 'file_change', 'command_exit', 'process_exit', 'watchdog_stalled', 'watchdog_recovered', 'monitor_error', 'monitor_expired']);
-export const defaultEvents = eventSchema.options.filter(x => x !== 'watchdog_recovered');
+export const connectionEvents = ['connection_lost', 'connection_unresponsive', 'connection_restored'] as const;
+export const eventSchema = z.enum(['command_output', 'file_change', 'command_exit', 'process_exit', 'watchdog_stalled', 'watchdog_recovered', 'monitor_error', 'monitor_expired', ...connectionEvents]);
+export const defaultEvents = eventSchema.options.filter(x => x !== 'watchdog_recovered' && !connectionEvents.includes(x as any));
 export const eventReviewSchema = z.strictObject({
   event_ids: z.array(z.string().uuid()).min(1).max(8).describe('Exact IDs from the native callback; at most eight events.'),
   resolution: str(1000).optional().describe('Omit to inspect. Supply only after handling or deliberately dismissing these events; acknowledges them and returns final status.'),
@@ -33,9 +34,19 @@ export const watchdogOptions = z.strictObject({ ...shared,
   gpu_id: str(1000).optional(), gpu_match: z.enum(['all', 'any']).optional(), nvidia_smi: str().optional(),
   dead_if: z.enum(['all', 'any']).optional(), watchdog_only: z.boolean().optional(), report_recovery: z.boolean().optional(),
 });
+export const sshSchema = z.strictObject({
+  type: z.literal('ssh'), host: str(253), user: str(128).optional(), port: int(1, 65535).optional(),
+  identity_file: str().optional(), config_file: str().optional(),
+  connect_timeout_ms: int(1000, 60000).default(10000),
+  query_timeout_ms: int(1000, 15000).default(5000),
+  heartbeat_ms: int(1000, 60000).default(15000),
+  reconnect: z.strictObject({ enabled: z.boolean().default(true), max_elapsed_ms: int(1000, 10800000).default(1800000) }).default({ enabled: true, max_elapsed_ms: 1800000 }),
+});
+export const connectionOptions = z.strictObject({ timeout_ms: int(1, week).optional() });
 export const monitorSchema = z.strictObject({
-  name: str(100), kind: z.enum(['command', 'watchdog']).optional().describe('Inferred from options.command when omitted.'),
-  options: z.union([commandOptions, watchdogOptions]), instructions: str(2000),
+  name: str(100), kind: z.enum(['command', 'watchdog', 'connection']).optional().describe('Inferred from options.command when omitted. connection requires SSH.'),
+  transport: sshSchema.optional().describe('Remote Linux sampling over one persistent SSH session. Omit for local observation; no remote Node installation.'),
+  options: z.union([commandOptions, watchdogOptions, connectionOptions]), instructions: str(2000),
   notify_on: z.array(eventSchema).min(1).optional(), event_ttl_ms: int(1000, week).optional(),
 });
 export const recoverySchema = z.strictObject({

@@ -34,6 +34,7 @@ export class Recovery {
   private busy = false;
   private epoch = 0;
   private currentRetry?: string;
+  private activityRevision = 0;
   constructor(private threadId: string, private connect: () => Promise<BridgeLike>, private save: () => void,
     private waiting: () => boolean, restored?: Json) {
     if (restored) this.state = { ...restored, enabled: false, state: 'interrupted', reason: 'Service restarted; explicit re-enable required', next_retry_at: null };
@@ -76,6 +77,7 @@ export class Recovery {
   }
   notice(method: string, params: Json) {
     if ((!this.state.enabled && this.state.state !== 'configuring') || params.threadId !== this.threadId) return;
+    if (['turn/started', 'turn/completed', 'thread/goal/updated', 'thread/goal/cleared', 'thread/status/changed'].includes(method)) this.activityRevision++;
     if (method === 'turn/completed' && params.turn?.status === 'interrupted') { this.halt('Turn interrupted; never retry an interruption', 'cancelled'); return; }
     if (method === 'thread/goal/updated' && params.goal?.status !== 'active') {
       if (this.waiting()) {
@@ -93,15 +95,19 @@ export class Recovery {
     this.busy = true; const epoch = this.epoch;
     try {
       if (this.expired()) return;
-      if (this.waiting()) { this.state.state = 'waiting'; return; }
+      if (this.waiting()) { this.state.state = 'waiting'; this.state.next_retry_at = null; return; }
       const bridge = await this.connect(); await loaded(bridge, this.threadId);
+      const activityRevision = this.activityRevision;
       const [turn, goal, meta] = await Promise.all([latestTurn(bridge, this.threadId), getGoal(bridge, this.threadId), bridge.rpc('thread/read', { threadId: this.threadId })]);
       if (epoch !== this.epoch || !this.state.enabled) return;
       if (this.expired()) return;
+      // A wait can be established while the host snapshots are in flight.
+      // Its plugin-owned pause is not a request to disable recovery.
+      if (this.waiting()) { this.state.state = 'waiting'; this.state.next_retry_at = null; return; }
       if (goal && (goal.status !== 'active' || (goal.tokenBudget != null && goal.tokensUsed >= goal.tokenBudget))) { this.halt('Goal paused, ended, edited to a terminal state, or budget exhausted', 'cancelled'); return; }
       if (this.state.incident_started_at != null && !sameGoal(this.state.goal, goal)) { this.halt('Goal changed during recovery; re-enable explicitly', 'cancelled'); return; }
       if (turn?.status === 'interrupted' && turn.id !== this.state.ignore_turn) { this.halt('Turn interrupted; user intent takes precedence', 'cancelled'); return; }
-      if (meta.thread?.status?.type === 'active' || turn?.status === 'inProgress') { this.state.state = 'observing'; return; }
+      if (meta.thread?.status?.type === 'active' || turn?.status === 'inProgress') { this.state.state = 'observing'; this.state.next_retry_at = null; return; }
       if (turn?.id === this.state.submitted_for_turn) {
         // A successful write is not permission to submit it again while the
         // host's latest-turn snapshot catches up. Only a new failure can retry.
@@ -128,19 +134,26 @@ export class Recovery {
       if (now() < this.state.next_retry_at) return;
       // Recheck immediately before writing. There is no host atomic compare-and-start API.
       const [current, currentGoal, currentMeta] = await Promise.all([latestTurn(bridge, this.threadId), getGoal(bridge, this.threadId), bridge.rpc('thread/read', { threadId: this.threadId })]);
-      if (epoch !== this.epoch || this.waiting() || !this.state.enabled) return;
+      if (epoch !== this.epoch || !this.state.enabled) return;
+      if (this.waiting()) { this.state.state = 'waiting'; this.state.next_retry_at = null; return; }
       if (this.expired()) return;
       if (!current || current.id !== turn.id || current.status !== 'failed' || currentMeta.thread?.status?.type === 'active' || !sameGoal(goal, currentGoal)) { this.state.next_retry_at = null; this.state.failed_turn = null; return; }
       if (!retryable(current.error, this.state.policy.retry_rate_limits, this.state.policy.retry_mode)) {
         this.state.state = 'not_retryable'; this.state.reason = 'Latest failure is no longer eligible under the configured retry mode';
         this.state.next_retry_at = null; return;
       }
-      this.state.attempts++; this.state.state = 'submitting'; this.state.next_retry_at = null;
-      this.state.retry_id = id(); this.save();
       try {
-        const result = await submit(bridge, this.threadId, { type: 'session_recovery', recovery_id: this.state.retry_id,
-          failed_turn_id: turn.id, error: current.error, attempt: this.state.attempts, retry_mode: this.state.policy.retry_mode,
-          instruction: 'Continue the existing task after a verified failed turn under the configured retry policy. Inspect the failure and reconcile completed tools and external effects before retrying work. Do not bypass host limits or policy stops, replay commands blindly, or restart training merely because the conversation failed.' }, this.state.root_turn);
+        const result = await submit(bridge, this.threadId, () => {
+          if (epoch !== this.epoch || !this.state.enabled || this.expired()) return null;
+          if (this.waiting()) { this.state.state = 'waiting'; this.state.next_retry_at = null; return null; }
+          if (activityRevision !== this.activityRevision) { this.state.state = 'observing'; this.state.next_retry_at = null; return null; }
+          this.state.attempts++; this.state.state = 'submitting'; this.state.next_retry_at = null;
+          this.state.retry_id = id(); this.save();
+          return { type: 'session_recovery', recovery_id: this.state.retry_id,
+            failed_turn_id: turn.id, error: current.error, attempt: this.state.attempts, retry_mode: this.state.policy.retry_mode,
+            instruction: 'Continue the existing task after a verified failed turn under the configured retry policy. Inspect the failure and reconcile completed tools and external effects before retrying work. Do not bypass host limits or policy stops, replay commands blindly, or restart training merely because the conversation failed.' };
+        }, this.state.root_turn);
+        if (!result) return;
         if (epoch !== this.epoch || !this.state.enabled) return;
         this.currentRetry = result.turn?.id;
         Object.assign(this.state, { state: 'submitted', submitted_for_turn: turn.id, submitted_turn: this.currentRetry, last_submission_at: now() });
@@ -156,7 +169,9 @@ export class Recovery {
       if (this.state.enabled) this.schedule(Math.max(100, Math.min(this.state.policy.check_interval_ms,
         this.state.deadline - now(),
         this.state.incident_started_at != null ? this.state.incident_started_at + this.state.policy.max_elapsed_ms - now() : Infinity,
-        this.state.next_retry_at != null ? this.state.next_retry_at - now() : Infinity)));
+        // A due model retry must not accelerate transport-only reconnection.
+        // Preserve that retry deadline and incident budget while the host is down.
+        this.state.state !== 'connection_unavailable' && this.state.next_retry_at != null ? this.state.next_retry_at - now() : Infinity)));
     }
   }
   close() { clearTimeout(this.timer); this.epoch++; this.state.enabled = false; }

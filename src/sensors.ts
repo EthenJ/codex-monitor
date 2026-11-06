@@ -8,14 +8,14 @@ import { Health, parseGpu } from './health.js';
 import { FileObservations } from './file-observations.js';
 import { Json, integer, text, within, bounded } from './common.js';
 
-export function validateOptions(kind: string, raw: Json, stateDirectory: string): Json {
+export function validateOptions(kind: string, raw: Json, stateDirectory: string | undefined, paths = path): Json {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('options must be an object');
   const shared = ['cwd', 'timeout_ms', 'max_events', 'debounce_ms'];
   const allowed = kind === 'command' ? [...shared, 'command', 'match', 'encoding'] :
     [...shared, 'watch_file', 'watch_directory', 'recursive', 'pattern', 'file_backend', 'poll_ms', 'stalled_for_ms', 'warmup_ms', 'pid', 'gpu_util_below', 'gpu_below_for_ms', 'gpu_recover_above', 'gpu_id', 'gpu_match', 'gpu_sample_ms', 'nvidia_smi', 'dead_if', 'watchdog_only', 'report_recovery'];
   if (!['command', 'watchdog'].includes(kind)) throw Error('kind must be command or watchdog');
   for (const key of Object.keys(raw)) if (!allowed.includes(key)) throw Error(`Unsupported option: ${key}`);
-  if (!path.isAbsolute(text(raw.cwd, 'cwd', 4096))) throw Error('cwd must be absolute');
+  if (!paths.isAbsolute(text(raw.cwd, 'cwd', 4096))) throw Error('cwd must be absolute');
   const o: Json = { timeout_ms: 1800000, max_events: 0, debounce_ms: 200, warmup_ms: 0, poll_ms: 1000, gpu_sample_ms: 10000,
     gpu_below_for_ms: 120000, gpu_id: '0', gpu_match: 'all', dead_if: 'all', file_backend: 'auto', ...raw };
   integer(o.timeout_ms, 'timeout_ms', 1, kind === 'command' ? 1800000 : 604800000);
@@ -28,8 +28,8 @@ export function validateOptions(kind: string, raw: Json, stateDirectory: string)
   if (o.watch_file && o.watch_directory) throw Error('Choose watch_file or watch_directory');
   if (o.gpu_recover_above !== undefined && o.gpu_util_below === undefined) throw Error('gpu_recover_above requires gpu_util_below');
   if (o.report_recovery && !o.stalled_for_ms && o.gpu_util_below === undefined) throw Error('report_recovery requires a file inactivity or GPU threshold');
-  for (const key of ['watch_file', 'watch_directory']) if (o[key]) o[key] = path.resolve(o.cwd, text(o[key], key, 4096));
-  if (o.watch_directory && within(stateDirectory, o.watch_directory)) throw Error('State must be outside the watched directory');
+  for (const key of ['watch_file', 'watch_directory']) if (o[key]) o[key] = paths.resolve(o.cwd, text(o[key], key, 4096));
+  if (stateDirectory !== undefined && o.watch_directory && within(stateDirectory, o.watch_directory)) throw Error('State must be outside the watched directory');
   if (o.stalled_for_ms !== undefined) { integer(o.stalled_for_ms, 'stalled_for_ms', 1, 604800000); if (!o.watch_file && !o.watch_directory) throw Error('Inactivity requires a file source'); }
   if (o.pid !== undefined) integer(o.pid, 'pid', 1, 2147483647);
   if (!['all', 'any'].includes(o.dead_if) || !['all', 'any'].includes(o.gpu_match)) throw Error('Aggregation must be all or any');

@@ -63,6 +63,25 @@ jobs:
       - run: npm test
       - run: npm run package
 
+  ssh-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: docker build -f tests/container/Dockerfile.ssh -t codex-monitor-ssh-test .
+      - name: Exercise real SSH, silent network loss, reconnect and host trust
+        run: node --test tests/node/ssh.test.mjs
+        env:
+          CODEX_MONITOR_TEST_SSH: "1"
+      - name: Exercise isolated Linux client and runtime-free server
+        run: node tools/test-ssh-linux.mjs
+
   network-container:
     runs-on: ubuntu-latest
     timeout-minutes: 15

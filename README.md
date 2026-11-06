@@ -10,6 +10,11 @@ CLI waits that keep goals active, authorized goal pause/resume and bounded
 recovery after conversation errors. No Codex source
 build, Python runtime or separate model API key is required.
 
+v0.4.0 adds remote Linux monitoring over a persistent SSH session. The local
+plugin schedules read-only file, process and GPU queries and evaluates watchdog
+rules. Remote Node/Python, plugin deployment and a background service are not
+required. Connection loss is an event and bounded reconnect restores observation.
+
 ## How it works
 
 1. Codex registers a finite observer through the plugin's typed MCP tools.
@@ -115,6 +120,29 @@ custom directories and noninteractive setup.
 
 ## Configuration
 
+For a remote workload, use an existing SSH alias through
+`transport: {type: "ssh", host: "gpu-box"}`. Remote paths/PIDs are interpreted
+on that Linux host. Each conversation shares one connection per SSH profile;
+stopping one subscription preserves the others and never kills an observed PID.
+Only existing workloads are observed: remote command launch is not supported.
+The shell adapter requires compatible `sh`, `timeout`, `base64` and the selected
+query utilities; GPU rules additionally need `nvidia-smi`. `validate` probes the
+requested capabilities without installing packages.
+
+```mermaid
+flowchart LR
+    A["Codex MCP"] <--> B["Local sampling, watchdogs and events"]
+    B <-->|"Persistent SSH"| C["Remote read-only system queries"]
+    B -->|"Task event or connection failure"| A
+```
+
+Healthy samples stay local. A connection incident wakes the relevant wait once,
+with compatible notification lifetimes grouped together. The plugin reconnects with bounded
+backoff; it does not restart training. Disconnected monitors show as reconnecting,
+with workload health unknown. Snapshot sampling can miss changes between reads,
+and observation gaps reset continuous stall/dwell timing. Prefer explicit metrics
+files over large directory scans. See [SSH monitoring](codex-monitor/references/plugin.md#ssh-monitoring).
+
 Describe the workload and desired action to Codex, for example:
 
 > Monitor this training process and its metrics file for 24 hours. Alert if
@@ -181,6 +209,8 @@ summary. Request `details: "active"` for the active list or supply `monitor_id`
 for full observer evidence. Routine end-of-turn summaries come from trusted
 hooks. `stop(target: "wait")` ends waiting and mutes its selected notifications,
 preserving observers and the goal; `stop(monitor_id: ...)` stops the observer.
+Stopping one observer releases a dependent wait for reassessment while preserving
+the other observers' notifications and the goal.
 Capacity warns at 24 occupied slots, with a hard limit
 of 32; reconcile obsolete or compatible overlapping observers before adding more.
 For concise waits, omit `resume_instructions` unless changing the next action.

@@ -73,6 +73,10 @@ The public API also merges the former reporting and acknowledgement operations:
 `status` supports summaries, active lists, full evidence and UI revision waits;
 `event` handles both inspection and resolution. Cancel waiting with
 `stop(target: "wait")`, or stop an observer with `stop(monitor_id: ...)`.
+Stopping one observer releases any wait that depends on it for reassessment,
+without muting the other observers or changing the goal. An explicitly stopped
+wait still mutes its selected notifications. After handling the stop, establish
+another wait for remaining work when appropriate.
 Exactly one stop target is required. Stopping waiting releases the pending call
 and mutes its selected notifications while preserving observers, processes and
 the native goal; a pause-mode goal remains paused. There are no separate public
@@ -86,7 +90,7 @@ The existing `start` shape remains compatible, but `options` now advertises comm
 {"thread_id":"<current UUID>","name":"tests","options":{"cwd":"C:/project","command":"npm test"},"instructions":"Inspect the test result and continue."}
 ```
 
-For a file use `options: {"cwd":"C:/project","watch_file":"runs/metrics.json"}`; add `stalled_for_ms` for inactivity. The 30-minute default is finite; longer training needs an explicit lifetime. No shell command is executed by validation:
+For a file use `options: {"cwd":"C:/project","watch_file":"runs/metrics.json"}`; add `stalled_for_ms` for inactivity. The 30-minute default is finite; longer training needs an explicit lifetime. Validation does not execute workload commands; SSH preflight runs bounded observation queries:
 
 ```json
 {
@@ -99,7 +103,7 @@ Pass this to `validate`. Use `operation: "recovery"` with a recovery config to c
 
 Validation checks source combinations, ranges, regex/encoding, filesystem access, state-directory aliases, existing PIDs and an optional bounded `nvidia-smi` query. Host verification defaults on and only reads the exact loaded thread/goal; it does not resume or start a turn. `check_host: false` explicitly skips it. Missing watched files are supported when their parent exists. Commands are never executed to test them, so command existence/success is unverified. A custom `nvidia_smi` executable is run for a metrics query only when explicitly supplied. Observers are not armed by validation and a successful snapshot does not guarantee later readiness.
 
-Start automatically repeats schema and local prerequisite checks before recording/arming a monitor. No monitor/event is created on a preflight failure. The service validates too, so bypassing MCP does not bypass these checks. Host verification is separate from registration: an observer can run even when callback delivery is unavailable.
+Start automatically repeats schema and local prerequisite checks before recording/arming a monitor. Failures of those checks create no monitor/event. SSH sources check remote readiness on the shared connection during registration; a remote failure retains a failed record and its diagnostic event. The service validates too, so bypassing MCP does not bypass these checks. Host verification is separate from registration: an observer can run even when callback delivery is unavailable.
 
 ## Automatic status reports
 
@@ -159,6 +163,13 @@ The service joins only an already-loaded thread for lifecycle notifications, wit
 Before sending, duplicates are coalesced, newer matching events supersede pending ones, acknowledged events are skipped, and expired events are discarded. A 250 ms batching window groups at most eight events. Registration/history are bounded. Reusing a name after an old monitor finishes supersedes that monitor's pending events.
 
 Callback lifecycle: `pending -> sending -> submitted -> acknowledged`. Blocking delivery uses `pending -> returned -> acknowledged`; additional callbacks stay local while returned evidence awaits reconciliation. Alternatives include `superseded`, `expired`, `suppressed`, `failed`, and `unknown`. Turn completion does not prove every event was handled. Explicit acknowledgement through `event` with a resolution records the agent's resolution. Acknowledgement/expiry cannot recall an already queued result. Uncertain submissions are not automatically retried; exactly-once execution is not guaranteed.
+
+Before writing a callback, the plugin rechecks event expiry, cancellation,
+recipient eligibility and observed goal/wait changes after its final host read.
+A cancelled member does not prevent unaffected events in the same batch from
+being delivered. History pressure reclaims only settled events; failed deliveries
+remain available for inspection. These checks cannot recall a write already sent
+or make host reads and writes atomic.
 
 Event results carry structured `timing` for the agent: `wait_elapsed_ms`,
 `wait_basis` (`poll`, `monitor`, or `unknown`), `wait_started_at`,
@@ -243,6 +254,109 @@ Manual goal pause holds ordinary callbacks locally until native resume; expiry s
 
 If a pending wake is acknowledged or expires, the wait becomes `interrupted` and leaves the goal unchanged. If every wait observer ends without a deliverable event, it becomes `failed`. Muted observers cannot create another wait. These outcomes require reconciliation rather than automatic goal resume.
 
+## SSH monitoring
+
+Add `transport: {"type":"ssh","host":"gpu-box"}` to a start configuration
+to observe an existing Linux workload. Omit transport for local behavior. SSH
+uses the local OpenSSH executable and the selected alias/configuration, including
+jump hosts, identity selection and known-host trust. It does not install remote
+packages, modify training code, open a remote listener or start a daemon.
+The client must support `ForkAfterAuthentication`, `StdinNull` and `SessionType`:
+the plugin fixes these to `no`, `no` and `default` so a conflicting host profile
+cannot detach the owned process or disable its command/input channel. Existing
+authentication, target selection and jump-host configuration remain applicable.
+
+```json
+{
+  "thread_id": "<exact-current-thread-id>",
+  "name": "remote-training",
+  "transport": { "type": "ssh", "host": "gpu-box" },
+  "options": {
+    "cwd": "/srv/training", "pid": 12345,
+    "watch_file": "runs/metrics.jsonl", "stalled_for_ms": 300000,
+    "gpu_util_below": 10, "gpu_below_for_ms": 120000,
+    "watchdog_only": true, "timeout_ms": 86400000
+  },
+  "instructions": "Inspect connectivity and training evidence; do not restart training automatically."
+}
+```
+
+The remote host needs Linux, `sh`, GNU-compatible `timeout` (including `-k`) and
+`base64 -w 0`. File/PID sources need `stat`/`cat`; directory sources use compatible
+`find -printf`; GPU rules use `nvidia-smi`. Node/Python and a writable home are
+not required. Unsupported capabilities fail explicitly; no fallback installs
+software. Public `validate` opens a temporary read-only probe, while `start`
+checks readiness on the shared persistent connection.
+Registration has its own finite deadline, separate from observer lifetime and
+reconnect budget. Cancellation or a disconnected caller during registration
+removes that new observer; a queued cancelled request cannot attach one later.
+
+Transport fields: `host`, optional `user`, `port`, absolute local `identity_file`
+and `config_file`; `connect_timeout_ms` defaults to 10000, `query_timeout_ms`
+to 5000, and `heartbeat_ms` to 15000. `reconnect` defaults to
+`{"enabled":true,"max_elapsed_ms":1800000}`. Reconnect delays are approximately
+5, 15, 30 and then 60 seconds with jitter. Reconnection is bounded by the incident
+budget and monitor lifetimes. It is independent of Codex turn recovery. Conflicting
+policies on the same shared target are rejected; inspect/reconcile before changing
+them. Unknown host keys or interactive authentication must be resolved through
+the user's normal SSH workflow; the plugin does not weaken verification.
+
+One thread shares one connection per target/profile. File/PID sampling defaults
+to 10 seconds, directories to 30 seconds and GPUs to 15 seconds; `poll_ms` and
+`gpu_sample_ms` can override these, with a one-second minimum. Sampling is local
+background scheduling with no model invocations. Directory snapshots have a
+4096-entry bound, finite query time and a bounded response size. Narrow
+the root when a limit is reached. Native file events are not supported by this
+adapter. Snapshot changes and GPU dwell are sampled observations, not complete
+event histories or proof of uninterrupted low utilization.
+`debounce_ms` suppresses repeated created/modified notifications for each path;
+every observed file-version change still resets inactivity. Deletions are delivered
+without debounce and clear that path's suppression, so recreation remains visible.
+
+`kind: "connection"` with `options: {"timeout_ms": ...}` watches the connection
+without a workload `cwd`, PID or file. It uses the same shell round-trip checks;
+it is not a separate transport-only implementation. Remote `kind: "command"`
+is rejected: the plugin does not take ownership of an independently launched job.
+
+`connection_lost`, `connection_unresponsive` and `connection_restored` are default
+remote notifications. Loss or response timeout is generated locally. A shared
+incident has `affected_monitor_ids`; event inspection and blocking results include
+each monitor's registered instructions. Stops/mutes suppress only affected
+subscriptions. Connection events do not consume workload `max_events`. Incidents
+are grouped only among subscriptions with the same event lifetime, so
+one monitor's short `event_ttl_ms` cannot expire another's evidence early. A restored
+connection must remain stable for 60 seconds before a recovery notification,
+coalescing flaps into the original incident. Individual sensors can fail even
+when the SSH connection is healthy.
+Event results mark recipients as `actionable` and omit instructions for cancelled,
+muted or already handled recipients. Shared evidence may still concern remaining
+recipients; only their current actionable instructions apply.
+
+An active poll can wake on a relevant connection incident. Subsequent waits
+require reconciliation plus live bounded reconnect/error/expiry guards. For
+custom `notify_on`, include both loss/unresponsive events and `monitor_error`/
+`monitor_expired`. Native goals and CLI input wake retain their existing rules.
+
+After a gap the adapter checks process identity (boot ID, PID and start time),
+file-root identity and fresh GPU data. Disconnection is unknown health, not a
+process exit or training stall. File/GPU continuity resets across missing
+observations; unseen events are not replayed. A disappeared/reused PID does not
+provide a trustworthy exit code or exact exit time. Stopping a remote monitor
+closes only its observation; stopping the last one closes the owned SSH session.
+Its slot remains occupied as `stopping` until local SSH cleanup completes;
+repeated stop requests await that same cleanup. Source intervals are evaluated
+using the fastest enabled source, so a slow GPU interval cannot hide interrupted
+file/PID observation. GPU-only monitors do not perform metadata-only sample ticks.
+Gap checks also run after remote reads: a long pause while a query is outstanding
+cannot establish file/GPU dwell on its return. GPU sampling intervals start from
+completed observations, avoiding immediate catch-up queries after a slow response.
+Queries have remote deadlines as well as local bounds, but kernel-stuck remote
+processes cannot be promised immediate termination by closing the local client.
+Oversized sample responses are drained within the request deadline and fail only
+that source; a malformed or incomplete protocol can still fail the shared
+connection. GPU provider commands run in the remote workload `cwd`, and their
+short-lived cache is scoped to that directory as well as provider/device selection.
+
 ## Session recovery
 
 Recovery defaults to enabled on the first monitor/wait operation in a new thread,
@@ -284,6 +398,17 @@ When the user's authorization covers all failed turns, set `retry_mode: "all_fai
 The transient mode also recognizes the exact terminal message `stream disconnected before completion: Our servers are currently busy. Please try again in a moment.` when Codex classifies it as `other`. Arbitrary `other` errors require `all_failed`. First monitor/wait use enables the installation preset once unless opted out; later delivery and observation never re-enable a stopped policy.
 
 Before retry, re-read latest turn, runtime status and goal. Interrupted turns, paused/ended goals, exhausted budget and new active work prevent recovery. Manual interruption disables the supervisor until re-enabled. Plugin waits suspend recovery. Silent long tools are not interrupted. Recovery continues the task after reconciling completed effects; it does not replay commands or restart training.
+
+After the final host read, retry submission rechecks opt-outs, interruptions,
+observed host activity and its elapsed deadline. An aborted preparation does not
+consume an attempt. Active work and monitor waits clear overdue retry timestamps,
+so background checks retain their normal cadence; a later eligible failure starts
+the configured delay again.
+
+A monitor wait established during those host reads also suspends recovery;
+its plugin-owned goal pause does not disable the supervisor. During daemon
+outages, local reconnect checks retain `check_interval_ms` even when a model
+retry is overdue; the original retry deadline and incident budget are preserved.
 
 Daemon loss causes local reconnect checks until the supervisor or active incident deadline. No model action happens before verification. Error eligibility and deadlines are rechecked after asynchronous host reads and before submission. Ambiguous submission disables retries as `unknown`. Restart disables recovery and marks existing observation/wait interrupted; reconfigure explicitly. Host APIs have no atomic compare-and-start, so concurrent user actions remain a race boundary.
 

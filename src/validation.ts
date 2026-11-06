@@ -4,7 +4,8 @@ import path from 'node:path';
 import { z } from 'zod';
 import { Bridge, BridgeLike, getGoal, loaded } from './bridge.js';
 import { Json, bounded, now, within } from './common.js';
-import { monitorSchema, recoveryPolicy, defaultEvents, commandOptions } from './contracts.js';
+import { monitorSchema, recoveryPolicy, defaultEvents, commandOptions, connectionEvents } from './contracts.js';
+import { normalizeSsh, probeSsh } from './ssh-samples.js';
 import { validateOptions } from './sensors.js';
 import { capture } from './processes.js';
 import { parseGpu } from './health.js';
@@ -16,6 +17,11 @@ export class ValidationFailure extends Error {
 export function normalizeMonitor(raw: unknown, directory: string): Json {
   const p = monitorSchema.parse(raw);
   const kind = p.kind ?? ('command' in p.options ? 'command' : 'watchdog');
+  if (p.transport) {
+    const remote = normalizeSsh(kind, p.options, p.transport);
+    return { ...p, kind, ...remote, notify_on: p.notify_on ?? [...defaultEvents, ...connectionEvents], event_ttl_ms: p.event_ttl_ms ?? 3600000 };
+  }
+  if (kind === 'connection') throw Error('connection monitors require transport: ssh');
   let options = validateOptions(kind, { ...p.options, ...(kind === 'command' ? { match: 'match' in p.options ? p.options.match ?? '(?!)' : '(?!)' } : {}) }, directory);
   if (kind === 'command') options = Object.fromEntries(Object.entries(options).filter(([key]) => key in commandOptions.shape));
   // Keep raw supplied strings (shell syntax/paths) intact; schemas must not trim them.
@@ -47,7 +53,7 @@ export async function checkFiles(o: Json, directory: string) {
   }
 }
 export async function validateRequest(threadId: string, directory: string, request: Json, checkHost = true,
-  connect: () => Promise<BridgeLike> = () => Bridge.connect()) {
+  connect: () => Promise<BridgeLike> = () => Bridge.connect(), remoteCheck = true) {
   const result: Json = { valid: false, checked_at: now(), operation: request.operation, normalized: null, checks: [], errors: [], warnings: [] };
   async function check(name: string, field: string, run: () => Promise<void>) {
     try { await run(); result.checks.push({ name, status: 'passed', message: 'Verified at validation time' }); }
@@ -68,6 +74,11 @@ export async function validateRequest(threadId: string, directory: string, reque
   });
   if (normalized && request.operation === 'start') {
     const o = normalized.options;
+    if (normalized.transport) {
+      if (remoteCheck) await check('ssh', 'config.transport', () => probeSsh(normalized!.kind, o, normalized!.transport));
+      else result.checks.push({ name: 'ssh', status: 'skipped', message: 'Remote readiness is checked on the shared connection during registration' });
+      result.warnings.push('Remote shell sampling may miss changes between snapshots. No remote packages or workloads are installed or launched.');
+    } else {
     await check('filesystem', 'config.options.cwd', () => checkFiles(o, directory));
     if (o.pid) await check('process', 'config.options.pid', async () => { process.kill(o.pid, 0); });
     if (o.gpu_util_below != null) await check('gpu', 'config.options.gpu_id', async () => {
@@ -76,6 +87,7 @@ export async function validateRequest(threadId: string, directory: string, reque
     if (normalized.kind === 'command') result.warnings.push('The workload command is not executed during validation; executable availability and its eventual exit status are not verified.');
     if ((o.watch_file || o.watch_directory) && o.file_backend === 'polling') result.warnings.push('Polling samples filesystem metadata, not every write. Same-size writes with unchanged modification time, directory changes with unchanged metadata, and changes entirely between samples may be missed.');
     result.warnings.push('Validation does not arm observers. Files, PIDs, GPU access and watcher readiness can change before registration.');
+    }
   }
   if (checkHost && normalized) await check('host', 'thread_id', async () => {
     const bridge = await connect();

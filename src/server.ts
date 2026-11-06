@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { sshReadinessMs } from './ssh-session.js';
 import path from 'node:path';
 import { ensureService, rpc } from './service.js';
 import { Json, VERSION, bounded, stateRoot, threadKey } from './common.js';
@@ -27,7 +28,8 @@ async function present(threadId: string, tool: string, data: Json, isError = fal
 async function call(threadId: string, method: string, params: Json, signal?: AbortSignal) {
   const tool = method === 'block_wait' || method === 'wait' ? 'poll' : method === 'cancel_wait' ? 'stop' : method;
   try {
-    const timeout = method === 'block_wait' ? (params.timeout_ms ?? 3600000) + 15000 : 60000;
+    const timeout = method === 'block_wait' ? (params.timeout_ms ?? 3600000) + 15000
+      : method === 'start' && params.transport ? sshReadinessMs(params.transport) + 5000 : 60000;
     const result = await rpc(await ensureService(threadId), method, params, timeout, signal);
     return present(threadId, tool, result,
       ['failed', 'goal_pause_required', 'guard_required', 'goal_unavailable', 'input_unavailable', 'turn_unavailable', 'wait_active'].includes(result.state));
@@ -39,12 +41,12 @@ async function call(threadId: string, method: string, params: Json, signal?: Abo
     return present(threadId, tool, result, true);
   }
 }
-server.registerTool('start', { title: toolTitles.start, description: 'Validate configuration and local prerequisites, then arm a finite command or watchdog. kind is inferred; command match is optional (exit-only). Routine progress stays local with watchdog_only. Commands are owned and stopped on cancel/deadline. Capacity warns at 24/32 occupied slots: reconcile obsolete observers and consolidate only compatible sources before adding more; do not blindly retry a full limit or stop required workloads. Host callback availability is separate; use validate for a read-only host check.',
+server.registerTool('start', { title: toolTitles.start, description: 'Validate configuration and local or SSH prerequisites, then arm a finite observer. transport: ssh uses a persistent connection and read-only Linux system queries; no remote runtime installation. Remote commands are not owned; connection monitors need no workload path. kind is inferred; command match is optional (exit-only). Routine progress stays local with watchdog_only. Commands are owned and stopped on cancel/deadline. Capacity warns at 24/32 occupied slots: reconcile obsolete observers and consolidate only compatible sources before adding more; do not blindly retry a full limit or stop required workloads. Host callback availability is separate; use validate for a read-only host check.',
   inputSchema: monitorSchema.extend({ thread_id: thread }), _meta: widgetMeta,
-}, ({ thread_id, ...params }) => call(thread_id, 'start', params));
+}, ({ thread_id, ...params }, extra) => call(thread_id, 'start', params, extra.signal));
 server.registerTool('validate', { title: toolTitles.validate, description: 'Preflight a start or recovery configuration without starting workloads, observers, recovery or model turns. Returns normalized defaults, checks, errors and warnings. Checks files, existing PIDs, optional NVIDIA query, and the exact loaded host thread by default. A pass is a snapshot, not guaranteed future readiness.',
   inputSchema: validationSchema.extend({ thread_id: thread }), outputSchema: validationOutput.extend({ display_mode: displayModeSchema, report: reportSchema }), _meta: widgetMeta,
-  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
 }, async ({ thread_id, request, check_host }) => {
   const result = await validateRequest(thread_id, path.join(stateRoot(), threadKey(thread_id)), request, check_host ?? true);
   return present(thread_id, 'validate', result, !result.valid);

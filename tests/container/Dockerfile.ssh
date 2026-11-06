@@ -1,0 +1,14 @@
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server coreutils findutils \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -s /bin/sh monitor && passwd -d monitor \
+    && mkdir -p /run/sshd /fixture /work && chown monitor:monitor /work \
+    && chmod 555 /home/monitor \
+    && ssh-keygen -A
+RUN printf '%s\n' 'Port 22' 'HostKey /etc/ssh/ssh_host_ed25519_key' \
+    'AuthorizedKeysFile /fixture/authorized_keys' 'StrictModes no' \
+    'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'UsePAM no' \
+    'PermitRootLogin no' 'AllowUsers monitor' 'LogLevel VERBOSE' \
+    > /etc/ssh/sshd_config
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]
