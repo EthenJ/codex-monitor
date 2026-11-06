@@ -166,11 +166,11 @@ export class Recovery {
       // These timer retries only reconnect/read the host, and never call the model blindly.
     } finally {
       this.busy = false; this.save();
+      // A due model retry must not accelerate transport-only reconnection.
+      // Preserve that retry deadline and incident budget while the host is down.
       if (this.state.enabled) this.schedule(Math.max(100, Math.min(this.state.policy.check_interval_ms,
         this.state.deadline - now(),
         this.state.incident_started_at != null ? this.state.incident_started_at + this.state.policy.max_elapsed_ms - now() : Infinity,
-        // A due model retry must not accelerate transport-only reconnection.
-        // Preserve that retry deadline and incident budget while the host is down.
         this.state.state !== 'connection_unavailable' && this.state.next_retry_at != null ? this.state.next_retry_at - now() : Infinity)));
     }
   }
