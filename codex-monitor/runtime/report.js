@@ -14,7 +14,7 @@ export const reportSchema = z.object({
     capacity: capacitySchema.nullable(),
     details: z.enum(['summary', 'active', 'full']).optional(),
     monitor_id: z.string().uuid().optional(),
-    summary: z.object({ active: z.number(), running: z.number(), starting: z.number(), stopping: z.number(),
+    summary: z.object({ active: z.number(), running: z.number(), reconnecting: z.number().optional(), starting: z.number(), stopping: z.number(),
         stopped: z.number(), failed_or_unknown: z.number(), unhandled_events: z.number() }),
     monitors: z.array(z.record(z.string(), z.unknown())), events: z.array(z.record(z.string(), z.unknown())),
     omitted: z.object({ monitors: z.number(), events: z.number() }),
@@ -22,7 +22,7 @@ export const reportSchema = z.object({
     goal_pause: z.record(z.string(), z.unknown()).optional(),
     warnings: z.array(z.string()),
 });
-const active = new Set(['armed', 'starting', 'stopping']);
+const active = new Set(['armed', 'starting', 'reconnecting', 'stopping']);
 const handled = new Set(['acknowledged', 'superseded', 'suppressed', 'expired']);
 export function summarize(snapshot, source) {
     const records = Array.isArray(snapshot.monitors) ? snapshot.monitors : Object.values(snapshot.monitors || {});
@@ -40,12 +40,13 @@ export function summarize(snapshot, source) {
         changes_omitted: Math.max(0, (snapshot.revision || 0) - (snapshot.changes || []).length),
         summary: { active: records.filter(x => active.has(x.state)).length,
             running: records.filter(x => x.state === 'armed').length,
+            reconnecting: records.filter(x => x.state === 'reconnecting').length,
             starting: records.filter(x => x.state === 'starting').length,
             stopping: records.filter(x => x.state === 'stopping').length,
             stopped: records.filter(x => x.state === 'stopped').length,
             failed_or_unknown: records.filter(x => ['failed', 'unknown'].includes(x.state)).length, unhandled_events: pending.length },
         monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), kind: x.kind, state: x.state, deadline: x.deadline,
-            muted: Boolean(x.muted),
+            muted: Boolean(x.muted), transport: x.transport, connection: x.connection,
             latest_event: x.latest_event, outcome: x.outcome?.reason,
             ...(active.has(x.state) ? { stop: { tool: 'stop', monitor_id: x.id } } : {}) })),
         events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, timing: x.timing, deferred_reason: x.deferred_reason })),
@@ -73,6 +74,8 @@ export function compactReport(report) {
     const parts = [running ? `${running} running` : 'none running'];
     if (starting)
         parts.push(`${starting} starting`);
+    if (report.summary.reconnecting)
+        parts.push(`${report.summary.reconnecting} reconnecting`);
     if (stopping)
         parts.push(`${stopping} stopping`);
     if (report.recovery?.enabled)
@@ -134,7 +137,7 @@ export async function readStatus(threadId, options = {}, root = stateRoot()) {
         : report.monitors.map((m) => records.find(r => r.id === m.id)).filter(Boolean);
     if (options.monitor_id && !selected.length)
         throw Error('Unknown monitor ID');
-    const selectedEvents = options.monitor_id ? events.filter(e => e.monitor_id === options.monitor_id)
+    const selectedEvents = options.monitor_id ? events.filter(e => e.monitor_id === options.monitor_id || e.affected_monitor_ids?.includes(options.monitor_id))
         : report.events.map((e) => events.find(r => r.id === e.id)).filter(Boolean);
     return { ...report, details, ...(options.monitor_id ? { monitor_id: options.monitor_id } : {}),
         monitors: selected, events: selectedEvents.slice(-8),

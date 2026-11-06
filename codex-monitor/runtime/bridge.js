@@ -173,6 +173,11 @@ export async function latestTurn(bridge, threadId) {
 }
 export async function submit(bridge, threadId, payload, rootTurnId) {
     await loaded(bridge, threadId);
+    // Resolve mutable authorization/evidence after the last awaited read. The
+    // synchronous preparation and write have no intervening event-loop yield.
+    const prepared = typeof payload === 'function' ? payload() : payload;
+    if (!prepared)
+        return null;
     return bridge.rpc('turn/start', { threadId, input: [], ...(rootTurnId ? { rootTurnId } : {}),
-        toolOutput: { name: 'event', namespace: 'monitor', output: eventText(payload), retain: true } });
+        toolOutput: { name: 'event', namespace: 'monitor', output: eventText(prepared), retain: true } });
 }

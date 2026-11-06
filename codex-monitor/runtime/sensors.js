@@ -7,7 +7,7 @@ import { observeWindowsPid } from './windows.js';
 import { Health, parseGpu } from './health.js';
 import { FileObservations } from './file-observations.js';
 import { integer, text, within, bounded } from './common.js';
-export function validateOptions(kind, raw, stateDirectory) {
+export function validateOptions(kind, raw, stateDirectory, paths = path) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw))
         throw Error('options must be an object');
     const shared = ['cwd', 'timeout_ms', 'max_events', 'debounce_ms'];
@@ -18,7 +18,7 @@ export function validateOptions(kind, raw, stateDirectory) {
     for (const key of Object.keys(raw))
         if (!allowed.includes(key))
             throw Error(`Unsupported option: ${key}`);
-    if (!path.isAbsolute(text(raw.cwd, 'cwd', 4096)))
+    if (!paths.isAbsolute(text(raw.cwd, 'cwd', 4096)))
         throw Error('cwd must be absolute');
     const o = { timeout_ms: 1800000, max_events: 0, debounce_ms: 200, warmup_ms: 0, poll_ms: 1000, gpu_sample_ms: 10000,
         gpu_below_for_ms: 120000, gpu_id: '0', gpu_match: 'all', dead_if: 'all', file_backend: 'auto', ...raw };
@@ -50,8 +50,8 @@ export function validateOptions(kind, raw, stateDirectory) {
         throw Error('report_recovery requires a file inactivity or GPU threshold');
     for (const key of ['watch_file', 'watch_directory'])
         if (o[key])
-            o[key] = path.resolve(o.cwd, text(o[key], key, 4096));
-    if (o.watch_directory && within(stateDirectory, o.watch_directory))
+            o[key] = paths.resolve(o.cwd, text(o[key], key, 4096));
+    if (stateDirectory !== undefined && o.watch_directory && within(stateDirectory, o.watch_directory))
         throw Error('State must be outside the watched directory');
     if (o.stalled_for_ms !== undefined) {
         integer(o.stalled_for_ms, 'stalled_for_ms', 1, 604800000);

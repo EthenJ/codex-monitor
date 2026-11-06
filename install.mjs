@@ -85,7 +85,7 @@ export async function main(args = process.argv.slice(2)) {
       );
     console.log(
       [
-        '\nInstallation plan · codex-monitor v0.3.0',
+        '\nInstallation plan · codex-monitor v0.4.0',
         `  Codex directory: ${config.codex_home}`,
         `  Monitor state:   ${stateDirectory(config)}`,
         `  Client:          ${config.client}`,

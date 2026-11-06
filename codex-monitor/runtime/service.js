@@ -229,10 +229,21 @@ export async function serve(directory, threadId) {
                         }
                         break;
                     }
-                    case 'start':
-                        result = await manager.start(params);
-                        await manager.activateDefaults();
+                    case 'start': {
+                        const controller = new AbortController(), abort = () => controller.abort();
+                        response.once('close', abort);
+                        try {
+                            if (response.destroyed)
+                                controller.abort();
+                            result = await manager.start(params, controller.signal);
+                            if (!controller.signal.aborted)
+                                await manager.activateDefaults();
+                        }
+                        finally {
+                            response.off('close', abort);
+                        }
                         break;
+                    }
                     case 'stop':
                         result = await manager.stop(params.monitor_id);
                         break;
