@@ -67,7 +67,7 @@ export function renderSummary(tool, data, isError = false, mode = 'compact', vie
             return lines[0];
         const active = (report.monitors || []).filter((m) => liveStates.has(m.state));
         for (const m of active.slice(0, 32))
-            lines.push(`  ${label(m.name)} · ${state(m.state)} · ${label(m.kind)}${m.muted ? ' · notifications muted' : ''} · ${label(m.id, 36)}`);
+            lines.push(`  ${label(m.name)} · ${state(m.state)} · ${label(m.kind)}${m.creator_thread_id && m.creator_thread_id !== report.thread_id ? ` · agent ${label(m.creator_nickname || m.creator_thread_id, 36)}` : ''}${m.muted ? ' · notifications muted' : ''} · ${label(m.id, 36)}`);
         const omitted = data.monitor_id ? 0 : Math.max(0, report.summary.active - Math.min(32, active.length));
         if (omitted)
             lines.push(`  +${omitted} more active monitors`);
@@ -93,6 +93,8 @@ export function renderSummary(tool, data, isError = false, mode = 'compact', vie
 }
 export function toolResult(tool, data, isError = false, view, mode = 'compact') {
     let text = renderSummary(tool, data, isError, mode, view);
+    if (data.routing_warning)
+        text += `\n  ${label(data.routing_warning, 250)}`;
     const warning = capacityWarning(data.capacity ?? (view?.verified ? view.capacity : null));
     if (warning && data.error?.code !== 'MONITOR_CAPACITY_EXCEEDED' && !text.includes(warning))
         text += `\n  ${warning}`;
