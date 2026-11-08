@@ -95,9 +95,9 @@ test('host checks only read the exact loaded thread and close on success and fai
   const f = await fixture(t);
   for (const available of [true, false]) {
     const methods = []; let closed = false;
-    const host = { rpc: async method => { methods.push(method); return { data: available ? [f.thread] : [] }; }, close: async () => { closed = true; } };
+    const host = { rpc: async method => { methods.push(method); return method === 'thread/read' ? {thread:{id:f.thread,source:'cli'}} : { data: available ? [f.thread] : [] }; }, close: async () => { closed = true; } };
     const r = await f.validate(f.config, true, async () => host);
-    assert.equal(r.valid, available); assert.deepEqual(methods, ['thread/loaded/list']); assert.equal(closed, true);
+    assert.equal(r.valid, available); assert.deepEqual(methods, available ? ['thread/loaded/list','thread/read'] : ['thread/loaded/list']); assert.equal(closed, true);
   }
   const r = await f.validate(f.config, true, async () => { throw Error('Daemon unavailable'); });
   assert.equal(r.valid, false); assert.equal(r.errors[0].code, 'HOST_FAILED');
@@ -120,6 +120,7 @@ test('unreadable watched files fail before registration', { skip: process.platfo
 test('recovery preflight checks goal and malformed reconfiguration preserves a live policy', async t => {
   const f = await fixture(t);
   const host = { rpc: async method => method === 'thread/loaded/list' ? { data: [f.thread] }
+    : method === 'thread/read' ? {thread:{id:f.thread,source:'cli'}}
     : method === 'thread/goal/get' ? { goal: { status: 'paused' } } : { data: [] }, close: async () => {} };
   const recovery = new Recovery(f.thread, async () => host, () => {}, () => false); t.after(() => recovery.close());
   await recovery.configure({ enabled: true, authorization: 'Fixture authorization' });

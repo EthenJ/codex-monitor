@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ensureBroker, ensureService, rpc } from '../../codex-monitor/runtime/service.js';
-import { Bridge, codexExecutable, submit } from '../../codex-monitor/runtime/bridge.js';
+import { Bridge } from '../../codex-monitor/runtime/bridge.js';
 import { owned, capture } from '../../codex-monitor/runtime/processes.js';
 
 async function eventually(check, timeout = 5000) {
@@ -64,22 +64,6 @@ test('forced owned guardian termination cleans its command descendants', { timeo
     await eventually(() => { try { process.kill(pid, 0); return false; } catch (e) { return e.code === 'ESRCH'; } });
   } finally { await p.stop(); await rm(root, { recursive: true, force: true }); }
 });
-test('native App Server accepts tool output and preserves goal lifecycle', { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 20000 }, async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'monitor-native-'));
-  await writeFile(path.join(root, 'config.toml'), 'model_provider="probe"\nmodel="probe"\n[model_providers.probe]\nname="Offline fixture"\nbase_url="http://127.0.0.1:1/v1"\nwire_api="responses"\nrequires_openai_auth=false\n');
-  const bridge = await Bridge.connect({ command: codexExecutable(), args: ['app-server', '--stdio'], jsonl: true, env: { ...process.env, CODEX_HOME: root } });
-  try {
-    const thread = (await bridge.rpc('thread/start', { cwd: root, approvalPolicy: 'never', sandbox: 'read-only' })).thread.id;
-    await bridge.rpc('thread/goal/set', { threadId: thread, objective: 'Fixture only', tokenBudget: 1000, status: 'active', origin: 'user' });
-    const paused = (await bridge.rpc('thread/goal/set', { threadId: thread, status: 'paused', origin: 'user' })).goal;
-    assert.equal(paused.status, 'paused'); assert.equal(paused.tokenBudget, 1000);
-    const result = await submit(bridge, thread, { event_id: randomUUID(), type: 'monitor_events', evidence: 'Fixture only' });
-    assert.equal(result.turn.status, 'inProgress');
-    await bridge.rpc('turn/interrupt', { threadId: thread, turnId: result.turn.id });
-    await bridge.rpc('thread/goal/clear', { threadId: thread });
-  } finally { await bridge.close(); await rm(root, { recursive: true, force: true }); }
-});
-
 test('observer survives forced cleanup of a strict Windows MCP host job', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'monitor-strict-job-')), state = path.join(root, 'state');
   const thread = randomUUID(), directory = path.join(state, thread), broker = await ensureBroker(state);

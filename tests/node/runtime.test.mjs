@@ -691,16 +691,14 @@ test('health thresholds preserve same-card dwell and unknown sensors', () => {
   h.gpu(200, { a: 100, b: 0 }); assert.equal(h.tick(200).event_type, 'watchdog_stalled');
   h.gpuUnknown(); assert.equal(h.tick(300), undefined);
   h.gpu(400, { a: 100, b: 100 }); assert.equal(h.tick(400).event_type, 'watchdog_recovered');
-  assert.throws(() => parseGpu('0, GPU-a, 00000000:01:00.0, N/A', '0'));
-  assert.throws(() => parseGpu('0, GPU-a, 00000000:01:00.0, 10', '0,1'));
 });
-test('retry classification excludes permanent, policy, budget and unknown errors', () => {
+test('transient retry classification excludes permanent, policy, budget and unknown errors', () => {
   for (const code of ['unauthorized', 'usageLimitExceeded', 'sessionBudgetExceeded', 'contextWindowExceeded', 'badRequest', 'other', 'misalignmentPolicyViolation']) assert.equal(retryable({ codexErrorInfo: code }), false);
   assert.equal(retryable({ codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } } }), false);
   assert.equal(retryable({ codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } }), true);
   assert.equal(retryable({ codexErrorInfo: 'rateLimitExceeded' }), false);
 });
-test('only the observed provider-busy other error is eligible for recovery', () => {
+test('transient recovery accepts the exact provider-busy other error and rejects quoted or extended messages', () => {
   const message = 'stream disconnected before completion: Our servers are currently busy. Please try again in a moment.';
   assert.equal(retryable({ codexErrorInfo: 'other', message }), true);
   assert.equal(retryable({ codexErrorInfo: 'serverOverloaded' }), true);

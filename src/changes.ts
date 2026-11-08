@@ -23,6 +23,8 @@ export class Changes {
     if (snapshot.wait) values.push({ category: 'wait', id: snapshot.wait.id, state: snapshot.wait.state,
       mode: snapshot.wait.mode, deadline: snapshot.wait.deadline, reason: snapshot.wait.reason,
       goal_control: snapshot.wait.goal_control, pause_barrier: snapshot.wait.pause_barrier });
+    for (const w of Object.values(snapshot.delegated_waits || {}) as Json[]) values.push({ category: 'delegated_wait', id: w.id,
+      caller_thread_id: w.caller_thread_id, state: w.state, reason: w.reason, deadline: w.deadline });
     if (snapshot.goal_pause) values.push({ category: 'goal_pause', state: snapshot.goal_pause.owner });
     if (snapshot.recovery) { const r = snapshot.recovery; values.push({ category: 'recovery', state: r.state,
       enabled: r.enabled, attempts: r.attempts, next_retry_at: r.next_retry_at, policy: r.policy }); }

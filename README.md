@@ -7,13 +7,12 @@ for a callback instead of repeatedly checking logs.
 Supports command completion and output matching, file/directory changes, process
 exit, training inactivity and NVIDIA GPU utilization. It also provides authorized
 CLI waits that keep goals active, authorized goal pause/resume and bounded
-recovery after conversation errors. No Codex source
-build, Python runtime or separate model API key is required.
+recovery after conversation errors. No Codex source build, Python runtime or
+separate model API key is required.
 
-v0.4.0 adds remote Linux monitoring over a persistent SSH session. The local
-plugin schedules read-only file, process and GPU queries and evaluates watchdog
-rules. Remote Node/Python, plugin deployment and a background service are not
-required. Connection loss is an event and bounded reconnect restores observation.
+Subagents share root-owned monitoring with scoped operations and event handoff.
+Remote Linux monitoring uses persistent SSH and read-only queries, without
+remote Node/Python, plugin deployment or a background service.
 
 ## How it works
 
@@ -44,19 +43,12 @@ flowchart TD
     I --> J
 ```
 
-Healthy sensor samples stay in the background. Training stall alerts use the
-configured inactivity durations and GPU dwell thresholds; PID exit, sensor
-errors and observer expiry provide separate failure signals. Delivery also
-respects manual interruption, paused goals and unresolved prior results.
-
 When only monitored work remains, `poll` (shown as `monitor.poll` in CLI)
-defaults to a blocking wait.
-The goal stays active and the tool remains pending without repeated model calls.
-A monitor event, finite timeout or newly submitted CLI input releases it. The
-plugin samples newly appended input-history records for the exact conversation
-locally (250 ms by default); message text stays with Codex. This CLI adapter
-requires readable input history under the same `CODEX_HOME` and does not establish
-desktop-client support. Blocking may still count toward goal elapsed time.
+keeps one tool call pending while the goal stays active. A monitor event, timeout
+or new CLI input releases it. Input detection requires readable history under
+the same `CODEX_HOME`; it samples locally, leaving message text with Codex.
+This adapter does not establish desktop support, and blocking may still count
+toward goal elapsed time.
 
 ```mermaid
 flowchart TD
@@ -71,25 +63,50 @@ flowchart TD
     G --> H
 ```
 
-The timeout is one hour when omitted; a supplied valid timeout takes precedence.
-Input sampling runs locally without model turns. Manual cancellation, goal
-changes or connection loss also release the call; these paths require
-reconciliation rather than silently restarting an interrupted wait.
+An omitted timeout uses one hour; a supplied valid value takes precedence.
+Cancellation, goal changes and connection loss also release the call and require
+reconciliation before rearming.
 
 Explicit `mode: "pause"` retains authorized native pause/resume waiting. It
 confirms the pause and holds early events until the current turn has ended.
 Manually resuming the same live paused goal preserves its monitors. Manual
 pauses, task/budget edits and interruptions take precedence in both modes.
 
-Stopping a command monitor terminates its owned command tree. A watchdog observes
-an existing workload and never terminates its PID. Native callbacks require the
-same loaded local Codex daemon. CLI output is text; graphical panels depend on
-client support.
+Native callbacks require the same loaded local Codex daemon. CLI output is text;
+graphical panels depend on client support.
+
+Subagents pass their own `thread_id`. The plugin verifies their ancestry and
+registers observers under the root task while retaining their creator. The root
+can inspect the whole task; children can operate only their own branches.
+Independent child polls can run alongside a root poll. Only the root controls
+shared recovery and optional native goal pause/resume.
+
+```mermaid
+flowchart TD
+    A["Root and child monitor.start calls"] --> B["Verify native subagent ancestry"]
+    B --> C["One root service: observers, capacity and SSH pool"]
+    C --> D["Save workload event with creator provenance"]
+    D --> E{"Matching child poll pending?"}
+    E -->|Yes| F["Return event to that child only"]
+    E -->|No| G["Root poll or root callback"]
+    F --> H{"Child resolves event before ending?"}
+    H -->|Yes| I["Acknowledged; no repeat delivery"]
+    H -->|No| J["Hand off to root; prior processing unconfirmed"]
+    J --> G
+```
+
+Child completion or closure preserves root-owned observation. Unacknowledged
+results handed back to the root require reconciliation before further action.
+Native agent messages and new CLI input from verified ancestors release pending
+child waits without replaying message text. Manual parent pause/interruption
+takes precedence. See [subagent behavior](codex-monitor/references/plugin.md#subagents)
+for compatibility, ownership and upgrade details.
 
 ## Installation
 
 Requires Node.js **22.22+** (24 recommended), npm, Codex CLI **0.166.0+** and a
-compatible local Codex daemon. Tested on Windows and Ubuntu with Codex 0.166.0.
+compatible local Codex daemon. Windows native tests use Codex 0.167.0; the Ubuntu
+container suite also checks compatibility with 0.166.0.
 GPU monitoring additionally requires working `nvidia-smi`.
 
 Download and extract a complete package from [Releases](https://github.com/EthenJ/codex-monitor/releases),
@@ -122,7 +139,7 @@ custom directories and noninteractive setup.
 
 For a remote workload, use an existing SSH alias through
 `transport: {type: "ssh", host: "gpu-box"}`. Remote paths/PIDs are interpreted
-on that Linux host. Each conversation shares one connection per SSH profile;
+on that Linux host. Each root task and its subagents share one connection per SSH profile;
 stopping one subscription preserves the others and never kills an observed PID.
 Only existing workloads are observed: remote command launch is not supported.
 The shell adapter requires compatible `sh`, `timeout`, `base64` and the selected
@@ -136,9 +153,9 @@ flowchart LR
     B -->|"Task event or connection failure"| A
 ```
 
-Healthy samples stay local. A connection incident wakes the relevant wait once,
-with compatible notification lifetimes grouped together. The plugin reconnects with bounded
-backoff; it does not restart training. Disconnected monitors show as reconnecting,
+Connection incidents are grouped by creator and compatible notification lifetime.
+The plugin reconnects with bounded backoff; it does not restart training.
+Disconnected monitors show as reconnecting,
 with workload health unknown. Snapshot sampling can miss changes between reads,
 and observation gaps reset continuous stall/dwell timing. Prefer explicit metrics
 files over large directory scans. See [SSH monitoring](codex-monitor/references/plugin.md#ssh-monitoring).
@@ -172,13 +189,12 @@ For training, use `options.watchdog_only: true` to keep healthy progress quiet, 
 Choose `options.dead_if: "all"` to require both configured file and GPU stall conditions,
 or `"any"` to alert on either. Set a lifetime that covers the expected run.
 
-Recovery is **enabled by default** on first monitor/wait use in a new thread:
-`all_failed`, every 300 seconds, at most 3 hours per incident, with a separate
-24-hour supervisor lifetime. It waits for Codex's own retries to finish and only
+Recovery is **enabled by default** on first monitor/wait use in a root task,
+using `all_failed` and the limits above. It waits for Codex's own retries to finish and only
 retries verified failed turns. Manual interruption, paused goals and host
-budget/usage limits prevent recovery. Disable it per thread with
+budget/usage limits prevent recovery. Disable it for the task with
 `recovery(enabled: false)`, or select `recovery: false` during setup for
-new threads. Explicit opt-outs, stopped policies and service restarts are never
+new tasks. Explicit opt-outs, stopped policies and service restarts are never
 silently re-enabled by another monitor operation. Custom policies remain
 configurable; `transient` narrows eligibility to recognized connection/server
 failures.
@@ -197,10 +213,8 @@ flowchart TD
     G -->|No| I["Do not submit; reconcile or stop as appropriate"]
 ```
 
-The default incident window is three hours. Manual interruption, explicit
-opt-out, exhausted limits and uncertain submissions stop automatic recovery;
-later monitor calls do not silently turn it back on. Retries resume the
-conversation and instruct the agent to reconcile effects before repeating work.
+Retries resume the conversation and require reconciling effects before repeating
+work. Uncertain submissions stop automatic retries.
 
 The eight tools are `start`, `stop`, `event`, `status`, `validate`, `display`,
 `poll` and `recovery`, under the `monitor` namespace. Use `validate` to preview
@@ -208,14 +222,12 @@ configuration, `event` to inspect and resolve events, and `status` for a read-on
 summary. Request `details: "active"` for the active list or supply `monitor_id`
 for full observer evidence. Routine end-of-turn summaries come from trusted
 hooks. `stop(target: "wait")` ends waiting and mutes its selected notifications,
-preserving observers and the goal; `stop(monitor_id: ...)` stops the observer.
-Stopping one observer releases a dependent wait for reassessment while preserving
-the other observers' notifications and the goal.
+preserving observers and the goal; `stop(monitor_id: ...)` stops the observer and
+releases its dependent wait. Stopping a command monitor terminates its owned
+process tree; a watchdog never kills the PID it observes.
 Capacity warns at 24 occupied slots, with a hard limit
 of 32; reconcile obsolete or compatible overlapping observers before adding more.
-For concise waits, omit `resume_instructions` unless changing the next action.
-The CLI controls argument display and hook rendering; hooks have no independent
-click-to-expand list in the inspected version. State is stored in
+The CLI controls argument display and hook rendering. State is stored in
 `<CODEX_HOME>/monitor-node` (normally `~/.codex/monitor-node`), or
 `CODEX_MONITOR_HOME` when set. Use consistent directories for Codex and the launcher.
 

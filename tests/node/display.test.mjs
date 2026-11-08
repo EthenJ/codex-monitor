@@ -36,7 +36,7 @@ test('event inspection is read-only; resolution preserves settled events and act
   const host=new EventEmitter();host.close=async()=>{};host.rpc=async(method)=>method==='thread/loaded/list'?{data:[thread]}:{};
   const manager=new Manager(dir,thread,{connect:async()=>host});cleanup.push(()=>manager.close());
   const monitor=await manager.start({name:'event-test',options:{cwd:work,watch_file:'metrics',timeout_ms:30000},instructions:'Registered action'});
-  const eid=randomUUID(),stale=randomUUID();
+  const eid=randomUUID(),stale=randomUUID(),expired=randomUUID();
   manager.events[eid]={id:eid,monitor_id:monitor.id,event_type:'file_change',state:'submitted',occurred_at:Date.now(),expires_at:Date.now()+30000,evidence:{path:'metrics',value:'UNTRUSTED'}};
   manager.events[stale]={...manager.events[eid],id:stale,state:'superseded'};manager.save();
   const before=await readFile(path.join(dir,'state.json'),'utf8');
@@ -46,8 +46,10 @@ test('event inspection is read-only; resolution preserves settled events and act
   await assert.rejects(manager.reviewEvent({event_ids:[eid,randomUUID()],resolution:'checked'}),/Unknown event/);
   await assert.rejects(manager.reviewEvent({event_ids:[eid],resolution:' '}));
   assert.equal(manager.events[eid].state,'submitted');
-  const resolved=await manager.reviewEvent({event_ids:[eid,stale,eid],resolution:'Checked file; keep observing'});
-  assert.deepEqual(resolved.acknowledged_ids,[eid]);assert.deepEqual(resolved.already_settled_ids,[stale]);
+  manager.events[expired]={...manager.events[eid],id:expired,expires_at:0};
+  const resolved=await manager.reviewEvent({event_ids:[eid,stale,expired,eid],resolution:'Checked file; keep observing'});
+  assert.deepEqual(resolved.acknowledged_ids,[eid]);assert.deepEqual(resolved.already_settled_ids,[stale,expired]);
+  assert.equal(manager.events[expired].state,'expired');assert.equal(resolved.events.find(e=>e.id===expired).actionable,false);
   assert.equal(manager.events[stale].state,'superseded');assert.equal(manager.records[monitor.id].state,'armed');assert.equal(manager.jobs.size,1);
   const timestamp=manager.events[eid].acknowledged_at;
   assert.deepEqual((await manager.reviewEvent({event_ids:[eid],resolution:'repeat'})).acknowledged_ids,[]);
@@ -65,12 +67,6 @@ test('installation defaults apply to new threads and per-thread choices override
   assert.deepEqual(displaySettings(thread,undefined,root).warnings,[]);
   const fallback=displaySettings(randomUUID(),undefined,root);
   assert.equal(fallback.mode,'compact');assert.equal(fallback.warnings.length,1);
-});
-test('expired callbacks remain expired and unknown IDs never acknowledge a valid selection',async t=>{
-  const {dir,thread,cleanup}=await setup(t),manager=new Manager(dir,thread);cleanup.push(()=>manager.close());
-  const eid=randomUUID();manager.events[eid]={id:eid,monitor_id:randomUUID(),state:'submitted',expires_at:0};
-  const r=await manager.reviewEvent({event_ids:[eid],resolution:'Already obsolete'});
-  assert.equal(r.events[0].state,'expired');assert.equal(r.events[0].actionable,false);assert.deepEqual(r.acknowledged_ids,[]);
 });
 test('trigger cards show failures and progress, keep evidence structured, and add verbose details',()=>{
   const event={id:randomUUID(),monitor_id:randomUUID(),name:'job\u001b\u202e<img>',event_type:'command_exit',evidence:{returncode:7,private:'SECRET'},instructions:'SECRET',state:'submitted',actionable:true};
@@ -92,7 +88,9 @@ test('MCP event acknowledgement carries the final report; display changes need n
     const call=(name,args={})=>client.callTool({name,arguments:{thread_id:thread,...args}});
     assert.equal((await call('display')).structuredContent.mode,'compact');assert.equal(existsSync(path.join(dir,'endpoint.json')),false);
     const started=await call('start',{name:'compact-test',options:{cwd:work,watch_file:'metrics',timeout_ms:10000},instructions:'Check progress',notify_on:['monitor_expired']});
-    assert.equal(started.structuredContent.report.summary.running,1);assert.equal(started.content[0].text.split('\n').length,1);
+    assert.equal(started.structuredContent.report.summary.running,1);
+    assert.equal(started.content[0].text.split('\n').length,2);
+    assert.match(started.content[0].text,/Host ancestry unavailable; isolated thread observation only/);
     const pid=(await rpc(dir,'status')).service_pid;
     await call('display',{mode:'verbose'});
     assert.match((await call('status')).content[0].text,/compact-test · running/);

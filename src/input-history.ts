@@ -5,9 +5,9 @@ import { threadKey } from './common.js';
 
 // CLI input history is an early wake hint, not an authorization or message bus.
 // Only inspect newly appended records, and never return their text to the model.
-export async function watchInputHistory(file: string, threadId: string,
+export async function watchInputHistory(file: string, threadId: string | string[],
   wake: (reason: 'user_input' | 'input_unavailable') => void, interval = 250) {
-  const thread = threadKey(threadId), baseline = await stat(file);
+  const threads = new Set((Array.isArray(threadId) ? threadId : [threadId]).map(threadKey)), baseline = await stat(file);
   if (!baseline.isFile()) throw Error('CLI input history is not a regular file');
   let offset = baseline.size, carry = '', closed = false, reading = false, again = false;
   let continuation: NodeJS.Immediate | undefined;
@@ -44,7 +44,7 @@ export async function watchInputHistory(file: string, threadId: string,
               const line = carry.slice(0, newline); carry = carry.slice(newline + 1);
               if (skipLine) { skipLine = false; continue; }
               try { const entry = JSON.parse(line); if (typeof entry.session_id === 'string' &&
-                entry.session_id.toLowerCase() === thread && typeof entry.text === 'string' && entry.text.trim()) finish('user_input'); }
+                threads.has(entry.session_id.toLowerCase()) && typeof entry.text === 'string' && entry.text.trim()) finish('user_input'); }
               catch { /* An incomplete or malformed record grants no wake authority. */ }
             }
             if (carry.length > 1024 * 1024) throw Error('CLI input history record exceeds the bounded reader');

@@ -19,6 +19,7 @@ export function capacityWarning(capacity?: Capacity | null): string {
     ? `${capacity.used}/${capacity.limit} slots in use · review obsolete and overlapping monitors` : '';
 }
 export const consolidationGuidance = [
+  'Capacity is shared by a root task and its subagents. A child must ask the root to coordinate other branches; never impersonate another thread to free slots.',
   'Inspect active monitor details and their source/rules before retrying. Reuse equivalent registrations and reconcile obsolete observers and handled events.',
   'Consolidate only compatible sources with the same workload and handling policy. Preserve per-workload inactivity detection, deadlines, pending evidence and wait guards; shared directories or similar names alone do not establish equivalence.',
   'Verify replacement coverage before stopping an observer. Stopping an owned command kills its command tree; do not stop required workloads to free slots. Deleting inactive history does not free observer slots.',

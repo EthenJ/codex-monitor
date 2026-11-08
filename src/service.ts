@@ -130,8 +130,9 @@ export async function serve(directory: string, threadId?: string) {
       }
       // HTTP chunks may split a UTF-8 code point. Decode only after collecting
       // the bounded byte stream so names, paths and instructions stay intact.
-      const { method, params = {} } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      let result;
+      const { method, params: rawParams = {} } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const { caller_thread_id: rawCaller, ...params } = rawParams;
+      let result: any;
       if (!manager) {
         if (method === 'status') result = { version: VERSION, state: 'ready', service_pid: process.pid };
         else if (method === 'launch') result = { directory: await ensureService(params.thread_id, path.dirname(directory), false) };
@@ -139,14 +140,27 @@ export async function serve(directory: string, threadId?: string) {
         else throw Error('Unknown broker method');
       } else {
         manager.lastUsed = now();
+        const caller = rawCaller ? threadKey(rawCaller) : manager.threadId, delegated = caller !== manager.threadId;
+        if (delegated && !['status', 'report_wait'].includes(method)) {
+          // Previously verified scopes remain usable for cleanup while the host
+          // is disconnected. New observers/waits still require live ancestry.
+          const savedScope = manager.delegation.members[caller] || Object.values(manager.records).some(record => manager.delegation.owns(caller, record));
+          // start/poll own verification inside their activity lease. An outer
+          // verification would let cancellation happen before that lease starts.
+          if (!['start', 'block_wait'].includes(method) && !(['stop', 'cancel_wait', 'event'].includes(method) && savedScope))
+            await manager.delegation.verify(caller);
+          if (['wait', 'recovery', 'shutdown', 'ack'].includes(method)) throw Error('Only the root agent may change task goal/recovery or shut down the shared service');
+          if (params.monitor_id) manager.delegation.monitor(caller, params.monitor_id);
+          if (method === 'event') for (const key of params.event_ids || []) manager.delegation.event(caller, key, params.resolution !== undefined);
+        }
         switch (method) {
-          case 'status': result = manager.snapshot(params.monitor_id, params.details === 'full'); break;
+          case 'status': result = manager.snapshot(params.monitor_id, params.details === 'full', caller); break;
           case 'report_wait': {
             const after = integer(params.after_revision, 'after_revision', 0, Number.MAX_SAFE_INTEGER);
             const timeout = integer(params.wait_ms, 'wait_ms', 1, 25000);
             const controller = new AbortController(), abort = () => controller.abort();
             response.once('close', abort);
-            try { await manager.changes.wait(after, timeout, controller.signal); result = manager.snapshot(); }
+            try { await manager.changes.wait(after, timeout, controller.signal); result = manager.snapshot(undefined, false, caller); }
             finally { response.off('close', abort); }
             break;
           }
@@ -155,7 +169,7 @@ export async function serve(directory: string, threadId?: string) {
             response.once('close', abort);
             try {
               if (response.destroyed) controller.abort();
-              result = await manager.start(params, controller.signal);
+              result = await manager.start(params, controller.signal, caller);
               if (!controller.signal.aborted) await manager.activateDefaults();
             } finally { response.off('close', abort); }
             break;
@@ -171,14 +185,24 @@ export async function serve(directory: string, threadId?: string) {
             response.once('close', abort);
             try {
               if (response.destroyed) controller.abort();
-              [result] = await Promise.all([manager.blockWait(params, controller.signal), manager.activateDefaults()]);
+              [result] = await Promise.all([delegated ? manager.delegation.poll(caller, params, controller.signal) : manager.blockWait(params, controller.signal), manager.activateDefaults()]);
             }
             finally { response.off('close', abort); }
             break;
           }
-          case 'cancel_wait': result = await manager.cancelWait(); break;
+          case 'cancel_wait': result = delegated ? manager.delegation.cancel(caller) : await manager.cancelWait(); break;
           case 'ack': result = await manager.acknowledge(params); break;
-          case 'event': result = await manager.reviewEvent(params); break;
+          case 'event': {
+            result = await manager.reviewEvent(params);
+            if (delegated) {
+              result.wait = manager.delegation.waits[caller] ?? null;
+              for (const event of result.events) if (event.delivery_thread_id && event.delivery_thread_id !== caller) {
+                event.actionable = false; delete event.instructions;
+                for (const monitor of event.affected_monitors || []) { monitor.actionable = false; delete monitor.instructions; }
+              }
+            }
+            break;
+          }
           case 'recovery': result = await manager.configureRecovery(params); break;
           case 'shutdown': if (!manager.isIdle()) throw Error('Stop monitors, cancel waits, disable recovery before shutdown'); result = { state: 'shutting_down' }; setImmediate(() => void close()); break;
           default: throw Error('Unknown monitor method');

@@ -111,6 +111,8 @@ test('active, pending and corrupt monitor state blocks upgrades before dependenc
     { monitors: { remote: { state: 'reconnecting' } } },
     { recovery: { enabled: true } },
     { wait: { state: 'waiting' } },
+    { delegated_waits: [{ state: 'waiting' }] },
+    { delegated_waits: { child: { state: 'waiting' } } },
     { events: { one: { state: 'pending' } } },
     { events: [{ state: 'unknown' }] },
     null,

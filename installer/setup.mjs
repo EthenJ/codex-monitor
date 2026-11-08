@@ -144,6 +144,7 @@ export async function assertInactive(root) {
       ) ||
       state.recovery?.enabled ||
       ['preparing', 'waiting', 'waking'].includes(state.wait?.state) ||
+      Object.values(state.delegated_waits || {}).some((w) => !w || ['preparing', 'waiting', 'waking'].includes(w.state)) ||
       Object.values(state.events || {}).some((e) => !e || ['pending', 'sending', 'returned', 'unknown'].includes(e.state))
     )
       throw Error(
@@ -193,8 +194,8 @@ export async function inspect(root, config, { env = process.env, execute = run }
       );
   }
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (manifest.name !== 'codex-monitor' || manifest.version !== '0.4.0')
-    throw Error('Expected the codex-monitor v0.4.0 package');
+  if (manifest.name !== 'codex-monitor' || manifest.version !== '0.4.1')
+    throw Error('Expected the codex-monitor v0.4.1 package');
   npmCommand(env);
   if (config.hooks) {
     const definitions = JSON.parse(await readFile(path.join(root, 'hooks/hooks.json'), 'utf8'));
@@ -276,7 +277,7 @@ export async function apply(
     if (e.code === 'EEXIST') throw Error(`Another installation may be running: ${lock}`);
     throw e;
   }
-  const bundle = path.join(parent, `0.4.0-${Date.now()}-${randomUUID().slice(0, 8)}`);
+  const bundle = path.join(parent, `0.4.1-${Date.now()}-${randomUUID().slice(0, 8)}`);
   const context = detected.context;
   const codex = (args) => execute(detected.command, args, context);
   let registryChanged = false;
@@ -322,9 +323,9 @@ export async function apply(
     await codex(['plugin', 'marketplace', 'add', bundle, '--json']);
     await codex(['plugin', 'add', pluginId, '--json']);
     const result = JSON.parse(await codex(['plugin', 'list', '--json']));
-    if (!result.installed.some((p) => p.pluginId === pluginId && p.version === '0.4.0' && p.enabled))
-      throw Error('Codex did not report the enabled v0.4.0 installation');
-    const cache = path.join(config.codex_home, 'plugins/cache/codex-monitor/codex-monitor/0.4.0');
+    if (!result.installed.some((p) => p.pluginId === pluginId && p.version === '0.4.1' && p.enabled))
+      throw Error('Codex did not report the enabled v0.4.1 installation');
+    const cache = path.join(config.codex_home, 'plugins/cache/codex-monitor/codex-monitor/0.4.1');
     if (!existsSync(path.join(cache, 'codex-monitor/runtime/server.js')))
       throw Error('Installed cache was not found; inspect codex plugin list');
     await execute(process.execPath, [path.join(cache, 'codex-monitor/runtime/setup-probe.js')], {
@@ -352,7 +353,7 @@ export async function apply(
       }
     }
     const receipt = {
-      version: '0.4.0',
+      version: '0.4.1',
       installed_at: new Date().toISOString(),
       bundle,
       cache,

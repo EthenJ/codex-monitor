@@ -9,6 +9,7 @@ import { normalizeSsh, probeSsh } from './ssh-samples.js';
 import { validateOptions } from './sensors.js';
 import { capture } from './processes.js';
 import { parseGpu } from './health.js';
+import { ancestry } from './ancestry.js';
 
 export class ValidationFailure extends Error {
   constructor(public report: Json) { super(report.errors.map((x: Json) => x.message).join('; ')); }
@@ -93,6 +94,14 @@ export async function validateRequest(threadId: string, directory: string, reque
     const bridge = await connect();
     try {
       await loaded(bridge, threadId);
+      const route = await ancestry(bridge, threadId);
+      result.routing = { caller_thread_id: route.caller, owner_thread_id: route.owner, ancestors: route.ancestors };
+      if (route.owner !== threadId) {
+        await loaded(bridge, route.owner);
+        if (request.operation === 'recovery') throw Error('Only the root agent may configure shared recovery');
+        result.warnings.push('Subagent observers belong to the root task. Blocking child polls receive their own events; otherwise callbacks target the root.');
+        if (!normalized?.transport) await checkFiles(normalized!.options, path.join(path.dirname(directory), route.owner));
+      }
       if (request.operation === 'recovery' && normalized?.enabled) {
         const goal = await getGoal(bridge, threadId);
         if (goal && (goal.status !== 'active' || (goal.tokenBudget != null && goal.tokensUsed >= goal.tokenBudget))) throw Error('Goal paused, ended or budget exhausted; recovery cannot run');

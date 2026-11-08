@@ -19,6 +19,26 @@ const docker=process.platform==='win32'?path.join(process.env.LOCALAPPDATA,'Prog
 async function run(command,args){return (await runFile(command,args,{windowsHide:true,timeout:30000,maxBuffer:2*1024*1024})).stdout;}
 const d=(...args)=>run(docker,args);
 const native=Boolean(process.env.CODEX_MONITOR_TEST_SSH);
+
+test('subagents share one real SSH connection but receive separately scoped connection incidents',{skip:!native,timeout:60000},async t=>{
+ const f=await fixture(t),m=await managerFixture(t,f),a=randomUUID(),b=randomUUID(),rpc=m.host.rpc;
+ m.host.rpc=async(method,p)=>{
+  if(method==='thread/read')return {thread:{id:p.threadId,source:p.threadId===m.thread?'cli':{subAgent:{thread_spawn:{parent_thread_id:m.thread}}},parentThreadId:p.threadId===m.thread?null:m.thread}};
+  if(method==='thread/loaded/list')return {data:[m.thread,a,b]};
+  return rpc(method,p);
+ };
+ const config={name:'shared-ssh',kind:'connection',transport:f.transport,options:{timeout_ms:30000},instructions:'Inspect this branch connection incident'};
+ const ma=await m.manager.start(config,undefined,a),mb=await m.manager.start(config,undefined,b);
+ assert.equal(ma.connection.id,mb.connection.id);assert.notEqual(ma.id,mb.id);
+ const pa=m.manager.delegation.poll(a,{timeout_ms:20000}),pb=m.manager.delegation.poll(b,{timeout_ms:20000});
+ await state(m.manager,()=>m.manager.delegation.waits[a]?.state==='waiting'&&m.manager.delegation.waits[b]?.state==='waiting');
+ await d('pause',f.name);const [ra,rb]=await Promise.all([pa,pb]);
+ assert.deepEqual(ra.events[0].affected_monitor_ids,[ma.id]);assert.deepEqual(rb.events[0].affected_monitor_ids,[mb.id]);
+ assert.equal(ra.events[0].connection_id,rb.events[0].connection_id);
+ await m.manager.reviewEvent({event_ids:ra.event_ids,resolution:'Inspected branch A incident'});
+ assert.equal(m.manager.events[rb.event_ids[0]].state,'returned');
+ assert.throws(()=>m.manager.delegation.event(a,rb.event_ids[0],true),/caller scope/);
+});
 async function fixture(t){
   const root=await mkdtemp(path.join(tmpdir(),'monitor-ssh-')),name='monitor-ssh-'+randomUUID().slice(0,8),key=path.join(root,'key');
   let launched=false;const cleanups=[];

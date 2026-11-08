@@ -8,7 +8,7 @@ function kernel() {
   const basic = koffi.struct('MonitorBasicLimits', { processTime: 'int64', jobTime: 'int64', flags: 'uint32', min: 'size_t', max: 'size_t', active: 'uint32', affinity: 'size_t', priority: 'uint32', scheduling: 'uint32' });
   const limits = koffi.struct('MonitorExtendedLimits', { basic, io: koffi.array('uint64', 6), processMemory: 'size_t', jobMemory: 'size_t', peakProcess: 'size_t', peakJob: 'size_t' });
   const startup = koffi.struct('MonitorStartup', { cb: 'uint32', reserved: 'void *', desktop: 'void *', title: 'void *', x: 'uint32', y: 'uint32', xs: 'uint32', ys: 'uint32', xc: 'uint32', yc: 'uint32', fill: 'uint32', flags: 'uint32', show: 'uint16', reserved2: 'uint16', reservedPtr: 'void *', stdin: 'void *', stdout: 'void *', stderr: 'void *' });
-  const pi = koffi.struct('MonitorProcessInfo', { process: 'void *', thread: 'void *', pid: 'uint32', tid: 'uint32' });
+  koffi.struct('MonitorProcessInfo', { process: 'void *', thread: 'void *', pid: 'uint32', tid: 'uint32' });
   api = { limits, startup,
     error: k.func('uint32 __stdcall GetLastError()'),
     close: k.func('int __stdcall CloseHandle(void *)'),

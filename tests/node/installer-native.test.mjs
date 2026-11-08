@@ -29,19 +29,20 @@ test(
 );
 
 test(
-  'real wizard installs and replaces in an isolated Codex home with spaces and Unicode',
+  'real wizard installs and replaces in an isolated home; MCP tools and UI resolve from a different workspace',
   { skip: !process.env.CODEX_MONITOR_TEST_NATIVE, timeout: 180000 },
   async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'monitor-install-native-'));
     const home = path.join(root, '模拟 home'),
       state = path.join(root, 'monitor state'),
-      deployment = path.join(root, 'release package');
+      deployment = path.join(root, 'release package'),
+      workspace = path.join(root, 'different workspace');
     const env = { ...process.env, CODEX_HOME: home, CODEX_MONITOR_HOME: state };
     const answers = path.join(root, 'answers.json');
     let bridge, service;
     const checkHost = async (expectedMode, hooks) => {
       bridge = await Bridge.connect({
-        args: ['app-server', '--stdio', '--enable', 'hooks'],
+        args: ['app-server', '--stdio', '--enable', 'hooks', '--enable', 'enable_mcp_apps'],
         jsonl: true,
         env,
       });
@@ -51,7 +52,7 @@ test(
           if (method === 'mcpServer/startupStatus/updated') statuses.set(p.name, p);
         });
         const thread = (
-          await bridge.rpc('thread/start', { cwd: root, approvalPolicy: 'never', sandbox: 'read-only' })
+          await bridge.rpc('thread/start', { cwd: workspace, approvalPolicy: 'never', sandbox: 'read-only' })
         ).thread.id;
         let server = (await bridge.rpc('mcpServerStatus/list', { threadId: thread })).data.find(
           (x) => x.pluginId === 'codex-monitor@codex-monitor',
@@ -82,7 +83,12 @@ test(
           await bridge.rpc('mcpServerStatus/list', { threadId: thread, serverName: server.name })
         ).data.find((x) => x.pluginId === 'codex-monitor@codex-monitor');
         assert.equal(server.runtimeStatus, 'connected');
-        assert.equal(Object.keys(server.tools).length, 8);
+        assert.deepEqual(Object.keys(server.tools).sort(), ['display', 'event', 'poll', 'recovery', 'start', 'status', 'stop', 'validate']);
+        assert.ok(Object.values(server.tools).every(tool => tool._meta?.ui?.resourceUri));
+        const resource = await bridge.rpc('mcpServer/resource/read', {
+          threadId: thread, server: server.name, uri: server.resources[0].uri,
+        });
+        assert.match(JSON.stringify(resource), /text\/html;profile=mcp-app/);
         const result = await bridge.rpc('mcpServer/tool/call', {
           threadId: thread,
           server: server.name,
@@ -103,6 +109,7 @@ test(
     };
     try {
       await mkdir(home, { recursive: true });
+      await mkdir(workspace);
       await writeFile(
         path.join(home, 'config.toml'),
         'personality="pragmatic"\nmodel="fixture"\nmodel_provider="fixture"\n[model_providers.fixture]\nname="Offline fixture"\nbase_url="http://127.0.0.1:1/v1"\nwire_api="responses"\nrequires_openai_auth=false\n',
