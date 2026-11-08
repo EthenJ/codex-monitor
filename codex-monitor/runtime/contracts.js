@@ -85,6 +85,7 @@ export const validationSchema = z.strictObject({
 });
 export const validationOutput = z.object({
     valid: z.boolean(), checked_at: z.number(), operation: z.enum(['start', 'recovery']),
+    routing: z.object({ caller_thread_id: z.string(), owner_thread_id: z.string(), ancestors: z.array(z.string()) }).optional(),
     normalized: z.record(z.string(), z.unknown()).nullable(),
     checks: z.array(z.object({ name: z.string(), status: z.enum(['passed', 'failed', 'skipped']), message: z.string() })),
     errors: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })), warnings: z.array(z.string()),

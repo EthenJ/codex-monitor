@@ -1,5 +1,72 @@
 # Node plugin: native results and recovery
 
+## Subagents
+
+Version 0.4.1 automatically resolves Codex subagent ancestry. Every tool still
+receives the exact caller's `thread_id`; no parent ID or routing configuration
+is required. Only host-provided `parentThreadId` / `source.subAgent.thread_spawn`
+metadata establishes ancestry. A fork or shared `sessionId` alone does not.
+
+All branches of a verified task use one root-owned service, its 32 live observer
+slots and its SSH connection pool. Registration names deduplicate only within
+their creating thread. Each record includes `owner_thread_id`,
+`creator_thread_id` and, when available, `creator_nickname`. The root can inspect
+and manage all records; a child can inspect and manage its own subtree, but not
+its ancestors' or siblings' observers. Display preferences remain per caller.
+Root hooks summarize the entire task; child reports show the child's branch.
+Capacity always reports the shared task limit.
+
+The service bounds ancestry at 32 levels, concurrent delegated waits at 32 and
+verified members at 128 per root task. Inactive members are reclaimed once they
+have no active/unknown observers, unresolved events, pending wait preparation or
+in-flight registration.
+Historical provenance stays on monitor records. A task reaching that limit needs
+explicit reconciliation, not registration retries. Existing observer/event
+history bounds still apply.
+
+Children use blocking `poll`, with unchanged native goals and the usual one-hour
+default. Their default `wake_scope: thread` covers their branch; the root's covers
+the task. Independent child waits may coexist with a root wait. Overlapping
+child/descendant waits are rejected. A matching child wait has delivery priority,
+then the root wait, then a root callback. Callbacks never target a closed child.
+SSH incidents are partitioned by creator and evidence lifetime so a child's
+acknowledgement cannot consume a sibling's incident. Only the root can configure
+shared recovery or use pause-mode waiting; the installation recovery preset
+activates once for the task and preserves previous opt-outs.
+
+Events returned to a child carry `delivery_thread_id` and still need explicit
+acknowledgement. When the child's turn ends or it closes, unacknowledged returned
+events are handed to the root with `handoff.previous_delivery: unconfirmed`.
+This is a reconciliation request, not permission to replay work. Events already
+acknowledged stay settled. If the host disconnects during child handling, returned
+evidence becomes `unknown` for root reconciliation. Service restart also marks
+unfinished delivery unknown; neither silently replays uncertain effects, and
+restart never silently rearms observers. Failure to persist a delegated handoff
+releases its pending call as interrupted and holds callbacks for reconciliation.
+
+Native agent messages, child queue changes, lifecycle changes and new CLI input
+from verified ancestors release the child's pending call. The plugin returns
+only a wake hint, never message text. The CLI history adapter must be readable
+with persistence enabled. Parent pause/interruption takes precedence, including
+during wait preparation. Child timeout/closure preserves observers; explicit
+`stop(target: wait)` mutes that wait's selected notifications. Stopping a command
+observer still kills its owned process tree. Child completion alone does not
+authorize cancelling a long-running workload.
+
+Ancestry is cached only from verified host metadata; cleanup uses saved verified
+scopes during disconnection. If a new caller's host metadata cannot be read,
+ordinary local observation retains the isolated-thread fallback with an explicit
+warning: subagent routing and callbacks are **unverified**. A known child's owner
+is never silently replaced with that fallback. Existing pre-0.4.1 child services
+with active/unknown monitors, recovery, waits or unresolved events require
+reconciliation with the previous plugin before routing can activate; live sensors
+are not migrated or restarted. Upgrade only after finishing that cleanup.
+
+These scopes prevent accidental cross-branch operations, not a security boundary
+against local code or an agent spoofing another `thread_id`. Codex permissions,
+tool approvals and sandbox rules still apply. In particular, a host may deny
+mutating MCP tools in a read-only session; the plugin does not bypass that policy.
+
 ## Install
 
 Requires Node.js 22.22+ (24 recommended), npm, Codex CLI 0.166.0+ and a compatible local Codex daemon. Validated with Codex 0.166.0. No Python runtime dependency.
@@ -24,7 +91,7 @@ Keep call arguments short: `poll` accepts omitted `resume_instructions`. A curre
 
 ## Observer capacity
 
-Each thread has 32 observer slots, with early warning at 24. Live reports and start results include `capacity: {used, limit, warning_at, remaining, state}`. Actual sensor reservations count, including starting/stopping and muted observers; historical records and recovery do not. A per-monitor snapshot still reports thread-wide capacity. Unreachable/saved and legacy snapshots without reservation data report `capacity: null`, rather than claiming verified availability.
+Each root task and its subagents share 32 observer slots, with early warning at 24. Live reports and start results include `capacity: {used, limit, warning_at, remaining, state}`. Actual sensor reservations count, including starting/stopping and muted observers; historical records and recovery do not. A per-monitor snapshot still reports task-wide capacity. Unreachable/saved and legacy snapshots without reservation data report `capacity: null`, rather than claiming verified availability.
 
 Pressure feedback appears in existing operation results and compact reports; it creates no callback or model turn. At full capacity, `MONITOR_CAPACITY_EXCEEDED` survives the local service and MCP layers with actionable guidance. Equivalent live registrations can still be reused. Do not blindly retry creation. Inspect active sources and reconcile obsolete observers first; deleting inactive history does not free slots.
 

@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { now, stateRoot, threadKey, VERSION } from './common.js';
 import { rpc } from './service.js';
 import { capacitySchema, monitorCapacity, capacityWarning } from './capacity.js';
+import { savedRoute } from './ancestry.js';
+import { scopeSnapshot } from './delegation.js';
 export const reportSchema = z.object({
     type: z.literal('monitor_report'), version: z.string(), thread_id: z.string(), checked_at: z.number(),
     display_mode: z.enum(['compact', 'verbose']).optional(),
@@ -20,6 +22,7 @@ export const reportSchema = z.object({
     omitted: z.object({ monitors: z.number(), events: z.number() }),
     wait: z.record(z.string(), z.unknown()).nullable(), recovery: z.record(z.string(), z.unknown()),
     goal_pause: z.record(z.string(), z.unknown()).optional(),
+    owner_thread_id: z.string().optional(), delegated_waits: z.array(z.record(z.string(), z.unknown())).optional(),
     warnings: z.array(z.string()),
 });
 const active = new Set(['armed', 'starting', 'reconnecting', 'stopping']);
@@ -32,6 +35,12 @@ export function summarize(snapshot, source) {
     const r = snapshot.recovery || { enabled: false, state: 'disabled' };
     const verified = source === 'live' || source === 'empty';
     return { type: 'monitor_report', version: snapshot.version || VERSION, thread_id: snapshot.thread_id,
+        owner_thread_id: snapshot.owner_thread_id,
+        delegated_waits: (Array.isArray(snapshot.delegated_waits) ? snapshot.delegated_waits : Object.values(snapshot.delegated_waits || {})).slice(-128).map((w) => ({
+            id: w.id, caller_thread_id: w.caller_thread_id, owner_thread_id: w.owner_thread_id, state: w.state, mode: w.mode,
+            started_at: w.started_at, deadline: w.deadline, released_at: w.released_at, elapsed_ms: w.elapsed_ms,
+            monitor_ids: w.monitor_ids, reason: w.reason, goal_control: w.goal_control
+        })),
         checked_at: now(), source, verified, revision: snapshot.revision || 0, changes: (snapshot.changes || []).slice(-128),
         live_updates: source === 'live' && Number.isSafeInteger(snapshot.revision),
         // A filtered snapshot still contains the manager's thread-wide slot count.
@@ -47,9 +56,10 @@ export function summarize(snapshot, source) {
             failed_or_unknown: records.filter(x => ['failed', 'unknown'].includes(x.state)).length, unhandled_events: pending.length },
         monitors: selected.map(x => ({ id: x.id, name: String(x.name || '').slice(0, 100), kind: x.kind, state: x.state, deadline: x.deadline,
             muted: Boolean(x.muted), transport: x.transport, connection: x.connection,
+            owner_thread_id: x.owner_thread_id, creator_thread_id: x.creator_thread_id, creator_nickname: x.creator_nickname,
             latest_event: x.latest_event, outcome: x.outcome?.reason,
             ...(active.has(x.state) ? { stop: { tool: 'stop', monitor_id: x.id } } : {}) })),
-        events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, timing: x.timing, deferred_reason: x.deferred_reason })),
+        events: pending.slice(-8).map(x => ({ id: x.id, monitor_id: x.monitor_id, event_type: x.event_type, state: x.state, occurred_at: x.occurred_at, timing: x.timing, deferred_reason: x.deferred_reason, delivery_thread_id: x.delivery_thread_id, handoff: x.handoff })),
         omitted: { monitors: records.length - selected.length, events: Math.max(0, pending.length - 8) },
         wait: snapshot.wait ? { state: snapshot.wait.state, mode: snapshot.wait.mode, deadline: snapshot.wait.deadline,
             started_at: snapshot.wait.started_at, released_at: snapshot.wait.released_at, elapsed_ms: snapshot.wait.elapsed_ms,
@@ -84,14 +94,18 @@ export function compactReport(report) {
         parts.push(report.wait.pause_barrier === 'ready' ? 'goal waiting for event' : 'goal paused; finishing current turn');
     if (report.wait?.state === 'waiting' && report.wait.mode === 'blocking')
         parts.push('waiting for event or CLI input');
+    const children = (report.delegated_waits || []).filter((w) => w.state === 'waiting' && w.caller_thread_id !== report.thread_id).length;
+    if (children)
+        parts.push(`${children} subagent${children === 1 ? '' : 's'} waiting`);
     const pressure = capacityWarning(report.capacity);
     if (pressure)
         parts.push(pressure);
     return `Monitor · ${parts.join(' · ')}`;
 }
 export async function waitReport(threadId, after, waitMs, signal, root = stateRoot()) {
+    threadId = threadKey(threadId);
     try {
-        return summarize(await rpc(path.join(root, threadKey(threadId)), 'report_wait', { after_revision: after, wait_ms: waitMs }, waitMs + 2000, signal), 'live');
+        return summarize(await rpc(path.join(root, savedRoute(threadId, root)?.owner ?? threadKey(threadId)), 'report_wait', { caller_thread_id: threadId, after_revision: after, wait_ms: waitMs }, waitMs + 2000, signal), 'live');
     }
     catch (e) {
         if (signal?.aborted)
@@ -101,20 +115,21 @@ export async function waitReport(threadId, after, waitMs, signal, root = stateRo
     }
 }
 export async function readReport(threadId, root = stateRoot(), timeout = 1200) {
+    threadId = threadKey(threadId);
     const { snapshot, source } = await readSnapshot(threadId, root, timeout);
     return summarize(snapshot, source);
 }
 async function readSnapshot(threadId, root, timeout, full = false) {
-    const directory = path.join(root, threadKey(threadId));
+    const owner = savedRoute(threadId, root)?.owner ?? threadKey(threadId), directory = path.join(root, owner);
     try {
-        return { snapshot: await rpc(directory, 'status', full ? { details: 'full' } : {}, timeout), source: 'live' };
+        return { snapshot: await rpc(directory, 'status', { caller_thread_id: threadId, ...(full ? { details: 'full' } : {}) }, timeout), source: 'live' };
     }
     catch {
         try {
             const snapshot = JSON.parse(await readFile(path.join(directory, 'state.json'), 'utf8'));
-            if (snapshot.thread_id !== threadId.toLowerCase())
+            if (snapshot.thread_id !== owner)
                 throw Error('Saved thread mismatch');
-            return { snapshot, source: 'saved' };
+            return { snapshot: scopeSnapshot(snapshot, threadId), source: 'saved' };
         }
         catch (e) {
             const missing = e.code === 'ENOENT' && !existsSync(path.join(directory, 'endpoint.json'));
@@ -124,6 +139,7 @@ async function readSnapshot(threadId, root, timeout, full = false) {
 }
 // Read diagnostics without starting a service, observer, connection or recovery.
 export async function readStatus(threadId, options = {}, root = stateRoot()) {
+    threadId = threadKey(threadId);
     const details = options.details ?? (options.monitor_id ? 'full' : 'summary');
     if (options.monitor_id && details !== 'full')
         throw Error('monitor_id requires details: full');
