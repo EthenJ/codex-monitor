@@ -7,11 +7,11 @@ export const connectionEvents = ['connection_lost', 'connection_unresponsive', '
 export const eventSchema = z.enum(['command_output', 'file_change', 'command_exit', 'process_exit', 'watchdog_stalled', 'watchdog_recovered', 'monitor_error', 'monitor_expired', ...connectionEvents]);
 export const defaultEvents = eventSchema.options.filter(x => x !== 'watchdog_recovered' && !connectionEvents.includes(x as any));
 export const eventReviewSchema = z.strictObject({
-  event_ids: z.array(z.string().uuid()).min(1).max(8).describe('Exact IDs from the native callback; at most eight events.'),
-  resolution: str(1000).optional().describe('Omit to inspect. Supply only after handling or deliberately dismissing these events; acknowledges them and returns final status.'),
+  event_ids: z.array(z.string().uuid()).min(1).max(8).describe('Exact IDs from a callback or poll result.'),
+  resolution: str(1000).optional().describe('Omit to inspect; supply a factual result only after handling/dismissing these events.'),
 });
-export const DEFAULT_RESUME_INSTRUCTIONS = 'Inspect the triggering monitor event and its registered instructions, reconcile completed effects, and continue the existing task within the user\'s authorization.';
-export const resumeInstructionsSchema = str(2000).optional().describe('Usually omit: reuse the current verified wait instructions, or inspect the event and continue the existing task. Supply a short next action only when changing it; do not repeat task history.');
+export const DEFAULT_RESUME_INSTRUCTIONS = 'Inspect the event and registered action; reconcile prior effects and continue the authorized task.';
+export const resumeInstructionsSchema = str(2000).optional().describe('Usually omit: reuse verified wait instructions or the default event-handling action. Set only to change the next action, without task history.');
 const shared = {
   cwd: str().describe('Absolute workload directory. Relative watched paths resolve here.'),
   timeout_ms: int(1, week).optional().describe('Finite observer lifetime in milliseconds; default 1800000.'),
@@ -21,7 +21,7 @@ const shared = {
 export const commandOptions = z.strictObject({ ...shared,
   timeout_ms: int(1, 1800000).optional().describe('Owned command lifetime; default and maximum 30 minutes.'),
   command: str(16000).describe('Shell command owned by this monitor; stopped on cancel or expiry.'),
-  match: str(1000).optional().describe('Optional JavaScript regex for output events; omitted means exit-only monitoring.'),
+  match: str(1000).optional().describe('JavaScript output regex; omit for exit-only monitoring.'),
   encoding: str().optional(),
 });
 export const watchdogOptions = z.strictObject({ ...shared,
@@ -45,8 +45,9 @@ export const sshSchema = z.strictObject({
 export const connectionOptions = z.strictObject({ timeout_ms: int(1, week).optional() });
 export const monitorSchema = z.strictObject({
   name: str(100), kind: z.enum(['command', 'watchdog', 'connection']).optional().describe('Inferred from options.command when omitted. connection requires SSH.'),
-  transport: sshSchema.optional().describe('Remote Linux sampling over one persistent SSH session. Omit for local observation; no remote Node installation.'),
-  options: z.union([commandOptions, watchdogOptions, connectionOptions]), instructions: str(2000),
+  transport: sshSchema.optional().describe('Persistent read-only SSH to Linux; omit for local observation. No remote runtime deployment.'),
+  options: z.union([commandOptions, watchdogOptions, connectionOptions]),
+  instructions: str(2000).describe('Short authorized next action when an event arrives.'),
   notify_on: z.array(eventSchema).min(1).optional(), event_ttl_ms: int(1000, week).optional(),
 });
 export const recoverySchema = z.strictObject({

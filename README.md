@@ -14,6 +14,18 @@ Subagents share root-owned monitoring with scoped operations and event handoff.
 Remote Linux monitoring uses persistent SSH and read-only queries, without
 remote Node/Python, plugin deployment or a background service.
 
+## Latest release: v0.4.2
+
+- Skill guidance is about **66% shorter**; MCP-wide instructions are **82% shorter**.
+- Tool descriptions plus repeated shared guidance are **75% shorter** in the
+  inspected Codex host. These are character counts, not model-token savings.
+- All eight tools, API defaults and monitoring behavior remain compatible with
+  v0.4.1. Installation preferences and recovery opt-outs are preserved.
+
+[Download ZIP](https://github.com/EthenJ/codex-monitor/releases/download/v0.4.2/codex-monitor-v0.4.2.zip)
+· [SHA-256](https://github.com/EthenJ/codex-monitor/releases/download/v0.4.2/codex-monitor-v0.4.2.zip.sha256)
+· [Release notes](https://github.com/EthenJ/codex-monitor/releases/tag/v0.4.2)
+
 ## How it works
 
 1. Codex registers a finite observer through the plugin's typed MCP tools.
@@ -28,19 +40,9 @@ remote Node/Python, plugin deployment or a background service.
    count when the turn ends, without a separate agent reporting call.
 
 ```mermaid
-flowchart TD
-    A["monitor.start: validate and register"] --> B["Background observers"]
-    B --> C["Command output / exit, file changes, process exit"]
-    B --> D["Training watchdog: file inactivity / low GPU dwell"]
-    D --> E{"Configured any / all stall rule reached?"}
-    C --> F["Save a relevant event with evidence"]
-    E -->|Yes| F
-    E -->|No| B
-    F --> G{"Matching blocking poll pending?"}
-    G -->|Yes| H["Return evidence through that MCP call"]
-    G -->|No| I["Local Codex daemon delivers monitor.event"]
-    H --> J["Agent inspects, acts and resolves the event"]
-    I --> J
+flowchart LR
+    A["Register"] --> B["Observe work"] --> C["Save event"]
+    C --> D["Return via poll or callback"] --> E["Handle and resolve"]
 ```
 
 When only monitored work remains, `poll` (shown as `monitor.poll` in CLI)
@@ -49,19 +51,6 @@ or new CLI input releases it. Input detection requires readable history under
 the same `CODEX_HOME`; it samples locally, leaving message text with Codex.
 This adapter does not establish desktop support, and blocking may still count
 toward goal elapsed time.
-
-```mermaid
-flowchart TD
-    A["Agent finishes independent work"] --> B["monitor.poll: reconcile events and verify live guards"]
-    B --> C["Keep one MCP call pending; goal stays active"]
-    C --> D{"First wake condition"}
-    D -->|Monitor event| E["Return evidence for the agent to handle"]
-    D -->|New same-thread CLI input| F["Release the call; Codex consumes the queued message"]
-    D -->|Timeout| G["Return once; agent reassesses the task"]
-    E --> H["Continue authorized work"]
-    F --> H
-    G --> H
-```
 
 An omitted timeout uses one hour; a supplied valid value takes precedence.
 Cancellation, goal changes and connection loss also release the call and require
@@ -81,26 +70,48 @@ can inspect the whole task; children can operate only their own branches.
 Independent child polls can run alongside a root poll. Only the root controls
 shared recovery and optional native goal pause/resume.
 
-```mermaid
-flowchart TD
-    A["Root and child monitor.start calls"] --> B["Verify native subagent ancestry"]
-    B --> C["One root service: observers, capacity and SSH pool"]
-    C --> D["Save workload event with creator provenance"]
-    D --> E{"Matching child poll pending?"}
-    E -->|Yes| F["Return event to that child only"]
-    E -->|No| G["Root poll or root callback"]
-    F --> H{"Child resolves event before ending?"}
-    H -->|Yes| I["Acknowledged; no repeat delivery"]
-    H -->|No| J["Hand off to root; prior processing unconfirmed"]
-    J --> G
-```
-
 Child completion or closure preserves root-owned observation. Unacknowledged
 results handed back to the root require reconciliation before further action.
 Native agent messages and new CLI input from verified ancestors release pending
 child waits without replaying message text. Manual parent pause/interruption
 takes precedence. See [subagent behavior](codex-monitor/references/plugin.md#subagents)
 for compatibility, ownership and upgrade details.
+
+<details>
+<summary>CLI waiting, subagent delivery and recovery flows</summary>
+
+**CLI waiting.** One pending call returns evidence, releases for new input or
+returns once on timeout. It does not start an agent polling loop.
+
+```mermaid
+flowchart LR
+    A["Independent work done"] --> B["Blocking poll"]
+    B --> C["Event / input / timeout"] --> D["Handle or reassess"]
+```
+
+**Subagents.** Verified branches share one service. Unacknowledged child results
+go to the root for reconciliation; child completion preserves observation.
+
+```mermaid
+flowchart LR
+    A["Shared root service"] --> B{"Child waiting?"}
+    B -->|Yes| C["Return to child"]
+    B -->|No| D["Return to root"]
+    C -->|Unacknowledged handoff| D
+```
+
+**Recovery.** The installation policy controls first-use activation. Stops,
+limits and uncertain submissions prevent automatic retries.
+
+```mermaid
+flowchart LR
+    A["Verified failed turn"] --> B["Wait retry interval"]
+    B --> C{"Policy and goal permit?"}
+    C -->|Yes| D["Continue same task"]
+    C -->|No| E["Hold / stop"]
+```
+
+</details>
 
 ## Installation
 
@@ -109,7 +120,7 @@ compatible local Codex daemon. Windows native tests use Codex 0.167.0; the Ubunt
 container suite also checks compatibility with 0.166.0.
 GPU monitoring additionally requires working `nvidia-smi`.
 
-Download and extract a complete package from [Releases](https://github.com/EthenJ/codex-monitor/releases),
+Download and extract the [v0.4.2 package](https://github.com/EthenJ/codex-monitor/releases/tag/v0.4.2),
 or clone the repository. Run from its directory in a normal terminal:
 
 ```sh
@@ -145,13 +156,6 @@ Only existing workloads are observed: remote command launch is not supported.
 The shell adapter requires compatible `sh`, `timeout`, `base64` and the selected
 query utilities; GPU rules additionally need `nvidia-smi`. `validate` probes the
 requested capabilities without installing packages.
-
-```mermaid
-flowchart LR
-    A["Codex MCP"] <--> B["Local sampling, watchdogs and events"]
-    B <-->|"Persistent SSH"| C["Remote read-only system queries"]
-    B -->|"Task event or connection failure"| A
-```
 
 Connection incidents are grouped by creator and compatible notification lifetime.
 The plugin reconnects with bounded backoff; it does not restart training.
@@ -199,20 +203,6 @@ silently re-enabled by another monitor operation. Custom policies remain
 configurable; `transient` narrows eligibility to recognized connection/server
 failures.
 
-```mermaid
-flowchart TD
-    A["First monitor / wait use in a new thread"] --> B{"Recovery enabled by installation policy?"}
-    B -->|No| C["Keep recovery off"]
-    B -->|Yes| D["Observe terminal turn status locally"]
-    D --> E{"Verified eligible failure after host retries?"}
-    E -->|No| D
-    E -->|Yes| F["Wait a fixed 300 seconds by default"]
-    F --> G{"Same failed turn, unchanged goal and limits available?"}
-    G -->|Yes| H["Request continuation in the same conversation"]
-    H --> D
-    G -->|No| I["Do not submit; reconcile or stop as appropriate"]
-```
-
 Retries resume the conversation and require reconciling effects before repeating
 work. Uncertain submissions stop automatic retries.
 
@@ -233,6 +223,19 @@ The CLI controls argument display and hook rendering. State is stored in
 
 See the [tool and configuration reference](codex-monitor/references/plugin.md)
 for complete examples, GPU rules, goal waiting and recovery policies.
+
+## Source and validation
+
+`main` and release ZIPs contain deployment files. TypeScript source, tests,
+workflows and review records are maintained on
+[`develop`](https://github.com/EthenJ/codex-monitor/tree/develop).
+
+v0.4.2 local Windows validation: **325 passed, 18 skipped, 0 failed**, including
+isolated native Codex fixtures. Production dependency installation and a fresh
+MCP connection verified all eight tools, display execution, status and the UI
+resource. See the
+[validation record](https://github.com/EthenJ/codex-monitor/blob/develop/docs/design/v0.4.2-validation.md)
+for measurements, environment gates and validation boundaries.
 
 ## License
 
