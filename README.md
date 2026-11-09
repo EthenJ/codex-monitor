@@ -237,6 +237,10 @@ resource. See the
 [validation record](https://github.com/EthenJ/codex-monitor/blob/develop/docs/design/v0.4.2-validation.md)
 for measurements, environment gates and validation boundaries.
 
+[Cross-platform CI](https://github.com/EthenJ/codex-monitor/actions/runs/42573467587)
+passed all **19 jobs**, covering Windows, Linux and macOS, Node.js 22/24,
+legacy Python checks, real SSH fixtures and isolated native Linux tests.
+
 ## License
 
 [MIT](LICENSE).
